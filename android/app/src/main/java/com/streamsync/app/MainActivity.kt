@@ -113,8 +113,11 @@ class MainActivity : AppCompatActivity() {
         adBlockEngine = AdBlockEngine(applicationContext, prefs)
         adBlockEngine.refreshRemoteFiltersAsync(networkExecutor)
 
-        // Initialize VDH-grade Multi-Signal Stream Sniffer & Manifest Parser
+        val defaultUa = WebSettings.getDefaultUserAgent(this)
+
+        // Initialize VDH-grade Multi-Signal Stream Sniffer & Manifest Parser with real WebView User-Agent
         streamSniffer = StreamSniffer(
+            defaultUserAgent = defaultUa,
             onStreamsUpdated = { sorted ->
                 latestStreams = sorted
                 runOnUiThread { updateStreamsButton() }
@@ -125,7 +128,6 @@ class MainActivity : AppCompatActivity() {
             }
         )
 
-        val defaultUa = WebSettings.getDefaultUserAgent(this)
         nativePlayerController = NativeRoomPlayerController(
             context = this,
             playerContainer = nativePlayerContainer,

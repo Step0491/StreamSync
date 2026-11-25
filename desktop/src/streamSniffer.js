@@ -14,8 +14,9 @@ const {
   friendlyCodec,
 } = require("./manifestParser");
 
-const CANDIDATE_URL_RE = /(\.(m3u8|mpd|mp4|webm|m4v|mov|m4a|mp3|aac|ogg|opus|flac)(\?|#|$)|\/videoplayback\b|mime=(video|audio)|mpegurl|dash\+xml|\/manifest|\/playlist\.m3u8|\/hls\/|\/dash\/)/i;
+const CANDIDATE_URL_RE = /(\.(m3u8|mpd|mp4|webm|m4v|mov|m4a|mp3|aac|ogg|opus|flac)(\?|#|$)|\/videoplayback\b|mime=(video|audio)|format=(m3u8|mpd)|mpegurl|dash\+xml|(master|index|playlist)\.m3u8)/i;
 const MEDIA_CT_RE = /(mpegurl|dash\+xml|^video\/|^audio\/|application\/mp4|application\/ogg)/i;
+const NON_MEDIA_CT_RE = /^(application\/json|text\/javascript|application\/javascript|application\/x-javascript|image\/|text\/css|font\/)/i;
 
 /**
  * CDP-powered (Chrome DevTools Protocol) media sniffer for Electron browserView.
@@ -100,8 +101,9 @@ class DesktopStreamSniffer {
     const cr = this._getHeader(respHeaders, "content-range");
     const cl = this._getHeader(respHeaders, "content-length");
 
-    // Ignore YouTube UMP/SABR proprietary binary chunks (not directly playable; handled by page playerData extractor)
+    // Ignore YouTube UMP/SABR proprietary binary chunks and strictly non-media MIME types (JSON, JS, images)
     if (ct.includes("vnd.yt-ump") || /[?&]ump=1\b/i.test(url)) return;
+    if (NON_MEDIA_CT_RE.test(ct)) return;
 
     const isMedia = MEDIA_CT_RE.test(ct) || CANDIDATE_URL_RE.test(url);
     if (!isMedia) return;
@@ -369,7 +371,12 @@ class DesktopStreamSniffer {
 
       const respCt = (resp.headers.get("content-type") || contentTypeHint || "").toLowerCase();
       const hasExplicitExt = /\.(m3u8|mpd|mp4|webm|m4v|mov|m4a|mp3|aac|ogg|opus|flac)(\?|#|$)|mime=(video|audio)|\/videoplayback\b/i.test(cleanUrl);
-      if (respCt.startsWith("text/html") || respCt.startsWith("image/") || respCt.startsWith("text/css")) {
+      if (NON_MEDIA_CT_RE.test(respCt)) {
+        this.streamsByKey.delete(normKey);
+        this._emit();
+        return;
+      }
+      if (respCt.startsWith("text/html")) {
         if (!hasExplicitExt) {
           this.streamsByKey.delete(normKey);
           this._emit();

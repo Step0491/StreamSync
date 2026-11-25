@@ -19,6 +19,7 @@ import java.util.concurrent.Executors
  * 3. Background manifest & byte-range container probing via ManifestParser
  */
 class StreamSniffer(
+    private val defaultUserAgent: String = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",
     private val onStreamsUpdated: (List<DetectedStream>) -> Unit,
     private val onPopupBlockedByJs: () -> Unit
 ) {
@@ -35,8 +36,14 @@ class StreamSniffer(
 
     val jsBridge = JsBridge()
 
+    // Strict media URL pattern (avoids false positives like manifest.json, /hls/hls.min.js, etc.)
     private val candidateUrlRegex = Regex(
-        """(\.(m3u8|mpd|mp4|webm|m4v|mov|m4a|mp3|aac|ogg|opus|flac)(\?|#|$)|/videoplayback\b|mime=(video|audio)|mpegurl|dash\+xml|/manifest|/playlist\.m3u8|/hls/|/dash/)""",
+        """(\.(m3u8|mpd|mp4|webm|m4v|mov|m4a|mp3|aac|ogg|opus|flac)(\?|#|$)|/videoplayback\b|mime=(video|audio)|format=(m3u8|mpd)|mpegurl|dash\+xml|(master|index|playlist)\.m3u8)""",
+        RegexOption.IGNORE_CASE
+    )
+
+    private val nonMediaExtRegex = Regex(
+        """\.(json|webmanifest|xml|html?|php|asp|jsp|txt|map|wasm|ico|svg|png|jpe?g|gif|webp|css|js|mjs|woff2?|ttf|eot)(\?|#|$)""",
         RegexOption.IGNORE_CASE
     )
 
@@ -68,6 +75,14 @@ class StreamSniffer(
     fun inspectWebRequest(request: WebResourceRequest, pageUrl: String?, pageTitle: String?) {
         val rawUrl = request.url?.toString() ?: return
         if (ManifestParser.isSegmentOrNoiseUrl(rawUrl)) return
+        if (nonMediaExtRegex.containsMatchIn(rawUrl) &&
+            !rawUrl.contains("m3u8", ignoreCase = true) &&
+            !rawUrl.contains("mpd", ignoreCase = true) &&
+            !rawUrl.contains("mime=video", ignoreCase = true) &&
+            !rawUrl.contains("mime=audio", ignoreCase = true)
+        ) {
+            return
+        }
         // Skip YouTube proprietary UMP/SABR chunks (not directly playable; extracted via ytInitialPlayerResponse)
         if (Regex("""[?&]ump=1\b""", RegexOption.IGNORE_CASE).containsMatchIn(rawUrl)) return
 
@@ -221,17 +236,28 @@ class StreamSniffer(
             }
 
             val respCt = (conn.contentType ?: contentTypeHint).lowercase(Locale.ROOT)
-            val totalSize = extractReliableTotalLength(conn, sentRange)
+            val totalSize = extractReliableTotalLength(conn, sentRange) ?: ManifestParser.extractQueryContentLength(cleanUrl)
 
             val hasExplicitMediaExt = Regex(
                 """\.(m3u8|mpd|mp4|webm|m4v|mov|m4a|mp3|aac|ogg|opus|flac)(\?|#|$)|mime=(video|audio)|/videoplayback\b""",
                 RegexOption.IGNORE_CASE
             ).containsMatchIn(cleanUrl)
 
-            // Reject HTML/image responses ONLY for ambiguous extensionless URLs.
-            // If URL has explicit media extension (e.g. .m3u8/.mp4), keep optimistic entry because
-            // background HttpURLConnection probes can hit Cloudflare/anti-bot HTML challenges while WebView plays fine!
-            if (respCt.startsWith("text/html") || respCt.startsWith("image/") || respCt.startsWith("text/css")) {
+            // Reject strictly non-media MIME types (JSON, JS, CSS, images, fonts) unconditionally;
+            // only keep text/html fallback if URL has an explicit media extension (Cloudflare challenge).
+            val isDefinitelyNotMedia = respCt.startsWith("application/json") ||
+                respCt.startsWith("text/javascript") ||
+                respCt.startsWith("application/javascript") ||
+                respCt.startsWith("application/x-javascript") ||
+                respCt.startsWith("image/") ||
+                respCt.startsWith("text/css") ||
+                respCt.startsWith("font/")
+            if (isDefinitelyNotMedia) {
+                streamsByKey.remove(normKey)
+                notifyUpdated()
+                return
+            }
+            if (respCt.startsWith("text/html")) {
                 if (!hasExplicitMediaExt) {
                     streamsByKey.remove(normKey)
                     notifyUpdated()
@@ -314,7 +340,14 @@ class StreamSniffer(
             }
 
             // 3. Binary Media Stream (MP4 / WebM / Audio)
-            // Filter out tiny UI click sounds / 1-second ad beacons (< 120 KB) when Content-Length is known
+            // Reject plain text that wasn't #EXTM3U or <MPD
+            if (respCt.startsWith("text/plain") && !hasExplicitMediaExt) {
+                streamsByKey.remove(normKey)
+                notifyUpdated()
+                return
+            }
+
+            // Filter out tiny UI click sounds / 1-second ad beacons (< 120 KB) when total size is reliably known
             if (totalSize != null && totalSize in 1..120_000L) {
                 streamsByKey.remove(normKey)
                 notifyUpdated()
@@ -326,7 +359,7 @@ class StreamSniffer(
 
             var width = probe.width
             var height = probe.height
-            var durationSec = probe.durationSec
+            var durationSec = probe.durationSec ?: ManifestParser.extractQueryDurationSec(cleanUrl)
             var bitrateKbps: Int? = null
             var effectiveKind = probe.kind
 
@@ -501,6 +534,11 @@ class StreamSniffer(
         }
         if (out.keys.none { it.equals("Referer", ignoreCase = true) } && pageUrl.startsWith("http")) {
             out["Referer"] = pageUrl
+        }
+        // Always attach the real WebView Chrome User-Agent so HttpURLConnection & MediaMetadataRetriever
+        // are not rejected by CDNs blocking "Dalvik/2.1.0"
+        if (out.keys.none { it.equals("User-Agent", ignoreCase = true) } && defaultUserAgent.isNotBlank()) {
+            out["User-Agent"] = defaultUserAgent
         }
         try {
             val cookieMgr = CookieManager.getInstance()

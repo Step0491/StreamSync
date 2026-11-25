@@ -666,7 +666,7 @@ object ManifestParser {
                 val hasSoun = "soun" in handlers
                 val vcodec = detectIsoVideoCodec(headerBytes)
                 val acodec = detectIsoAudioCodec(headerBytes)
-                val durSec = parseIsoMvhdDuration(headerBytes)
+                val durSec = parseIsoMvhdDuration(headerBytes) ?: parseIsoMehdDuration(headerBytes)
                 val dims = parseIsoTkhdDimensions(headerBytes)
 
                 if (hasVide && hasSoun) {
@@ -833,6 +833,54 @@ object ManifestParser {
             i++
         }
         return null
+    }
+
+    /** Parses ISO-BMFF 'mehd' (Movie Extends Header) for fragmented MP4 (fMP4/DASH) duration. */
+    private fun parseIsoMehdDuration(bytes: ByteArray): Double? {
+        // Needs timescale from mvhd first
+        var timescale = 0L
+        run {
+            val lim = bytes.size - 32
+            var i = 4
+            while (i <= lim) {
+                if (bytes[i] == 'm'.code.toByte() && bytes[i + 1] == 'v'.code.toByte() &&
+                    bytes[i + 2] == 'h'.code.toByte() && bytes[i + 3] == 'd'.code.toByte()
+                ) {
+                    val v = bytes[i + 4].toInt() and 0xFF
+                    timescale = if (v == 1) readUint32BE(bytes, i + 24) else readUint32BE(bytes, i + 16)
+                    break
+                }
+                i++
+            }
+        }
+        if (timescale <= 0L) return null
+
+        val lim = bytes.size - 16
+        var i = 4
+        while (i <= lim) {
+            if (bytes[i] == 'm'.code.toByte() && bytes[i + 1] == 'e'.code.toByte() &&
+                bytes[i + 2] == 'h'.code.toByte() && bytes[i + 3] == 'd'.code.toByte()
+            ) {
+                val version = bytes[i + 4].toInt() and 0xFF
+                val dur = if (version == 1 && i + 16 <= bytes.size) readUint64BE(bytes, i + 8)
+                else if (version == 0 && i + 12 <= bytes.size) readUint32BE(bytes, i + 8)
+                else 0L
+                if (dur > 0L) return dur.toDouble() / timescale.toDouble()
+                return null
+            }
+            i++
+        }
+        return null
+    }
+
+    fun extractQueryDurationSec(url: String): Double? {
+        return Regex("""[?&]dur=([0-9]+(?:\.[0-9]+)?)""", RegexOption.IGNORE_CASE)
+            .find(url)?.groupValues?.getOrNull(1)?.toDoubleOrNull()?.takeIf { it > 0.5 }
+    }
+
+    fun extractQueryContentLength(url: String): Long? {
+        return Regex("""[?&]clen=(\d+)""", RegexOption.IGNORE_CASE)
+            .find(url)?.groupValues?.getOrNull(1)?.toLongOrNull()?.takeIf { it > 0L }
     }
 
     /** Parses ISO-BMFF 'tkhd' boxes to extract max video track width & height (16.16 fixed-point). */
