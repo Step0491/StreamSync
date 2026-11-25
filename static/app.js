@@ -268,7 +268,7 @@ function attachVideoSource(url, isHls, isDash, showInternalAudioSelector = true,
     dashVideoInstance = dashjs.MediaPlayer().create();
     dashVideoInstance.initialize(videoEl, url, false);
     if (onFatalLoadError) {
-      dashVideoInstance.on(dashjs.MediaPlayer.events.ERROR, () => onFatalLoadError());
+      dashVideoInstance.on(dashjs.MediaPlayer.events.ERROR, (e) => onFatalLoadError(e && e.error ? e.error.message : "DASH error"));
     }
     if (showInternalAudioSelector) {
       dashVideoInstance.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED, () => {
@@ -287,13 +287,14 @@ function attachVideoSource(url, isHls, isDash, showInternalAudioSelector = true,
       });
     }
   } else if (isUrlHls(url, isHls) && window.Hls && Hls.isSupported()) {
-    hlsVideoInstance = new Hls();
+    hlsVideoInstance = new Hls({ enableWorker: true, lowLatencyMode: false });
     hlsVideoInstance.loadSource(url);
     hlsVideoInstance.attachMedia(videoEl);
     if (onFatalLoadError) {
       hlsVideoInstance.on(Hls.Events.ERROR, (_evt, data) => {
-        if (data && data.fatal && data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-          onFatalLoadError();
+        if (data && data.fatal) {
+          const code = data.response && data.response.code ? `HTTP ${data.response.code}` : (data.details || data.type);
+          onFatalLoadError(code);
         }
       });
     }
@@ -435,7 +436,9 @@ async function loadUnifiedPlayback(playback, title = null, broadcast = false, op
 
   playerSection.classList.remove("hidden");
 
-  const useProxy = forceProxy || shouldAutoProxyOnWeb(playback);
+  // Always try DIRECT playback from the viewer's own IP first (avoids datacenter IP blocks on IP-signed tokens);
+  // automatically fall back to /api/proxy ONLY if direct playback hits CORS/Referer network error!
+  const useProxy = forceProxy;
   const effectiveVideoUrl = useProxy
     ? buildWebProxyUrl(playback.video_url, playback.headers)
     : playback.video_url;
@@ -445,9 +448,18 @@ async function loadUnifiedPlayback(playback, title = null, broadcast = false, op
       : playback.audio_url
     : null;
 
-  const triggerProxyFallback = () => {
-    if (hasNativeAndroidPlayer || hasDesktopProxy || currentProxyFallbackTried) return;
+  const triggerProxyFallback = (errReason = "") => {
+    if (hasNativeAndroidPlayer || hasDesktopProxy) return;
+    if (currentProxyFallbackTried) {
+      roomSyncLog.textContent = `Stream blocked by CDN (${errReason || "403 / IP-locked token"}). Join using StreamSync Desktop (.exe) or Android App.`;
+      roomSyncLog.classList.remove("hidden");
+      updateStatusStripVisibility();
+      return;
+    }
     currentProxyFallbackTried = true;
+    roomSyncLog.textContent = `Direct stream blocked (${errReason || "CORS"}) — switching to StreamSync Proxy...`;
+    roomSyncLog.classList.remove("hidden");
+    updateStatusStripVisibility();
     const savedTime = videoEl.currentTime || 0;
     const wasPlaying = !videoEl.paused || autoPlay;
     loadUnifiedPlayback(playback, title, false, {
@@ -728,7 +740,13 @@ function applyRemoteSync(isPlaying, rawPosition, playbackRate, options = {}) {
         if (dualSyncActive) audioEl.currentTime = targetPos;
       }
       if (isPlaying && videoEl.paused) {
-        videoEl.play().catch(() => {});
+        videoEl.play().catch((err) => {
+          if (err && err.name === "NotAllowedError") {
+            roomSyncLog.textContent = "Browser blocked autoplay — click Play on the video to sync!";
+            roomSyncLog.classList.remove("hidden");
+            updateStatusStripVisibility();
+          }
+        });
         if (dualSyncActive) audioEl.play().catch(() => {});
       } else if (!isPlaying && !videoEl.paused) {
         videoEl.pause();

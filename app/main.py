@@ -106,7 +106,9 @@ async def proxy_media(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     upstream_headers: dict[str, str] = {
-        "User-Agent": (ua or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36")[:512],
+        "User-Agent": (ua or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")[:512],
+        "Accept": "*/*",
+        "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
     }
     if referer:
         upstream_headers["Referer"] = referer[:512]
