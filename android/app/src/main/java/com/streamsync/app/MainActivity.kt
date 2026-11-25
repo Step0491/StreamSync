@@ -2,48 +2,78 @@ package com.streamsync.app
 
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Message
 import android.provider.Settings
 import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
+import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.ui.PlayerView
+import com.streamsync.app.adblock.AdBlockEngine
+import com.streamsync.app.adblock.BrowserShieldScripts
+import com.streamsync.app.adblock.FilterRuleEngine
+import com.streamsync.app.extractor.DetectedStream
+import com.streamsync.app.extractor.StreamSniffer
+import com.streamsync.app.player.NativeRoomPlayerController
+import com.streamsync.app.ui.StreamSelectorSheet
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
 
+    private lateinit var topModeBar: LinearLayout
+    private lateinit var addressBar: LinearLayout
+    private lateinit var roomPane: LinearLayout
+    private lateinit var nativePlayerContainer: LinearLayout
+    private lateinit var nativePlayerHeader: LinearLayout
+    private lateinit var nativePlayerView: PlayerView
+    private lateinit var tvNativePlayerTitle: TextView
+    private lateinit var tvNativePlayerBadge: TextView
+
     private lateinit var roomWebView: WebView
     private lateinit var browserWebView: WebView
     private lateinit var etUrl: EditText
+    private lateinit var btnShield: Button
     private lateinit var btnTabRoom: Button
     private lateinit var btnTabBrowser: Button
     private lateinit var btnStreams: Button
     private lateinit var btnUpdate: Button
 
-    private val detectedStreams = ConcurrentHashMap<String, DetectedStream>()
+    private lateinit var adBlockEngine: AdBlockEngine
+    private lateinit var streamSniffer: StreamSniffer
+    private lateinit var nativePlayerController: NativeRoomPlayerController
+
+    @Volatile
+    private var latestStreams: List<DetectedStream> = emptyList()
     private var showingRoom = true
     private var currentBrowserUrl = "https://www.google.com"
+    private var lastClearedNavHostPath = ""
     private val networkExecutor = Executors.newSingleThreadExecutor()
 
     private val prefs by lazy { getSharedPreferences("streamsync_prefs", MODE_PRIVATE) }
@@ -53,9 +83,19 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        topModeBar = findViewById(R.id.topModeBar)
+        addressBar = findViewById(R.id.addressBar)
+        roomPane = findViewById(R.id.roomPane)
+        nativePlayerContainer = findViewById(R.id.nativePlayerContainer)
+        nativePlayerHeader = findViewById(R.id.nativePlayerHeader)
+        nativePlayerView = findViewById(R.id.nativePlayerView)
+        tvNativePlayerTitle = findViewById(R.id.tvNativePlayerTitle)
+        tvNativePlayerBadge = findViewById(R.id.tvNativePlayerBadge)
+
         roomWebView = findViewById(R.id.roomWebView)
         browserWebView = findViewById(R.id.browserWebView)
         etUrl = findViewById(R.id.etUrl)
+        btnShield = findViewById(R.id.btnShield)
         btnTabRoom = findViewById(R.id.btnTabRoom)
         btnTabBrowser = findViewById(R.id.btnTabBrowser)
         btnStreams = findViewById(R.id.btnStreams)
@@ -69,8 +109,39 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putString("server_url", defaultServer).apply()
         }
 
-        configureWebView(roomWebView, isMediaBrowser = false)
-        configureWebView(browserWebView, isMediaBrowser = true)
+        // Initialize 3-Layer AdBlock Engine + Remote Filter Refresh
+        adBlockEngine = AdBlockEngine(applicationContext, prefs)
+        adBlockEngine.refreshRemoteFiltersAsync(networkExecutor)
+
+        // Initialize VDH-grade Multi-Signal Stream Sniffer & Manifest Parser
+        streamSniffer = StreamSniffer(
+            onStreamsUpdated = { sorted ->
+                latestStreams = sorted
+                runOnUiThread { updateStreamsButton() }
+            },
+            onPopupBlockedByJs = {
+                adBlockEngine.recordJsBlockedPopup()
+                runOnUiThread { updateShieldButton() }
+            }
+        )
+
+        val defaultUa = WebSettings.getDefaultUserAgent(this)
+        nativePlayerController = NativeRoomPlayerController(
+            context = this,
+            playerContainer = nativePlayerContainer,
+            playerView = nativePlayerView,
+            tvPlayerTitle = tvNativePlayerTitle,
+            tvPlayerBadge = tvNativePlayerBadge,
+            roomWebView = roomWebView,
+            defaultUserAgent = defaultUa,
+            onFullscreenToggle = { fullscreen -> applyFullscreenMode(fullscreen) }
+        )
+
+        CookieManager.getInstance().setAcceptCookie(true)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(browserWebView, true)
+
+        configureRoomWebView()
+        configureBrowserWebView()
 
         etUrl.setText(savedServer)
         roomWebView.loadUrl(savedServer)
@@ -78,8 +149,20 @@ class MainActivity : AppCompatActivity() {
 
         btnTabRoom.setOnClickListener { switchTab(showRoom = true) }
         btnTabBrowser.setOnClickListener { switchTab(showRoom = false) }
-        btnStreams.setOnClickListener { showDetectedStreamsDialog() }
+        btnStreams.setOnClickListener { openStreamSelector() }
         btnUpdate.setOnClickListener { checkForUpdates() }
+
+        btnShield.setOnClickListener {
+            val enabledNow = adBlockEngine.toggleShieldForUrl(currentBrowserUrl)
+            val host = adBlockEngine.extractHost(currentBrowserUrl) ?: "this site"
+            Toast.makeText(
+                this,
+                if (enabledNow) "Ad/Popup Shield enabled for $host" else "Shield paused for $host",
+                Toast.LENGTH_SHORT
+            ).show()
+            updateShieldButton()
+            browserWebView.reload()
+        }
 
         btnGo.setOnClickListener { navigateCurrentTab() }
         etUrl.setOnEditorActionListener { _, actionId, _ ->
@@ -93,6 +176,9 @@ class MainActivity : AppCompatActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                if (nativePlayerController.exitFullscreenIfNeeded()) {
+                    return
+                }
                 val activeView = if (showingRoom) roomWebView else browserWebView
                 if (activeView.canGoBack()) {
                     activeView.goBack()
@@ -105,25 +191,117 @@ class MainActivity : AppCompatActivity() {
         })
 
         updateTabStyles()
+        updateShieldButton()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private fun configureWebView(webView: WebView, isMediaBrowser: Boolean) {
-        webView.settings.apply {
+    private fun configureRoomWebView() {
+        roomWebView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
             mediaPlaybackRequiresUserGesture = false
             useWideViewPort = true
             loadWithOverviewMode = true
         }
-        webView.webChromeClient = WebChromeClient()
-        webView.webViewClient = object : WebViewClient() {
+        roomWebView.addJavascriptInterface(nativePlayerController.jsBridge, "AndroidNativePlayer")
+        roomWebView.webChromeClient = WebChromeClient()
+        roomWebView.webViewClient = WebViewClient()
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun configureBrowserWebView() {
+        browserWebView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            mediaPlaybackRequiresUserGesture = false
+            useWideViewPort = true
+            loadWithOverviewMode = true
+            // Enable multi-window callback so WebChromeClient.onCreateWindow intercepts & blocks ad popups
+            setSupportMultipleWindows(true)
+            javaScriptCanOpenWindowsAutomatically = false
+        }
+
+        browserWebView.addJavascriptInterface(streamSniffer.jsBridge, "StreamSnifferBridge")
+
+        browserWebView.webChromeClient = object : WebChromeClient() {
+            override fun onCreateWindow(
+                view: WebView?,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: Message?
+            ): Boolean {
+                val hitResult = view?.hitTestResult
+                val candidatePopupUrl = hitResult?.extra
+                if (adBlockEngine.shouldBlockNavigationOrPopup(
+                        targetUrl = candidatePopupUrl,
+                        currentPageUrl = currentBrowserUrl,
+                        isPopupWindow = true
+                    )
+                ) {
+                    runOnUiThread { updateShieldButton() }
+                    return false
+                }
+                if (!candidatePopupUrl.isNullOrBlank() && isUserGesture) {
+                    view.loadUrl(candidatePopupUrl)
+                }
+                return false
+            }
+
+            override fun onReceivedTitle(view: WebView?, title: String?) {
+                super.onReceivedTitle(view, title)
+                if (!title.isNullOrBlank()) {
+                    streamSniffer.activePageTitle = title
+                }
+            }
+        }
+
+        browserWebView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): Boolean {
+                val targetUrl = request?.url?.toString() ?: return false
+                if (!request.isForMainFrame) {
+                    if (adBlockEngine.shouldBlockNavigationOrPopup(targetUrl, currentBrowserUrl, isPopupWindow = false)) {
+                        runOnUiThread { updateShieldButton() }
+                        return true
+                    }
+                    return false
+                }
+
+                // Block non-HTTP scheme hijacks (intent://, market://) and known ad-redirect domains
+                if (adBlockEngine.shouldBlockNavigationOrPopup(targetUrl, currentBrowserUrl, isPopupWindow = false)) {
+                    runOnUiThread { updateShieldButton() }
+                    return true
+                }
+                return false
+            }
+
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                if (isMediaBrowser && url != null) {
+                if (url != null) {
                     currentBrowserUrl = url
                     if (!showingRoom) etUrl.setText(url)
-                    detectedStreams.clear()
-                    updateStreamsButton()
+
+                    val navSignature = computeTopLevelNavSignature(url)
+                    if (navSignature.isNotEmpty() && navSignature != lastClearedNavHostPath) {
+                        lastClearedNavHostPath = navSignature
+                        adBlockEngine.resetPageCounter()
+                        streamSniffer.clearForNewTopLevelPage(url)
+                    } else {
+                        streamSniffer.activePageUrl = url
+                    }
+
+                    updateShieldButton()
+                    injectBrowserShieldAndSniffer(view, url)
+                }
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                if (url != null) {
+                    streamSniffer.activePageTitle = view?.title ?: ""
+                    injectBrowserShieldAndSniffer(view, url)
+                    updateShieldButton()
                 }
             }
 
@@ -131,46 +309,111 @@ class MainActivity : AppCompatActivity() {
                 view: WebView?,
                 request: WebResourceRequest?
             ): WebResourceResponse? {
-                if (isMediaBrowser && request != null) {
-                    inspectUrl(request.url.toString())
+                if (request != null) {
+                    val pageSnapshot = currentBrowserUrl
+                    val blockedResp = adBlockEngine.interceptRequest(request, pageSnapshot)
+                    if (blockedResp != null) {
+                        runOnUiThread { updateShieldButton() }
+                        return blockedResp
+                    }
+                    streamSniffer.inspectWebRequest(
+                        request = request,
+                        pageUrl = pageSnapshot,
+                        pageTitle = streamSniffer.activePageTitle
+                    )
                 }
                 return super.shouldInterceptRequest(view, request)
             }
-
-            override fun onLoadResource(view: WebView?, url: String?) {
-                if (isMediaBrowser && url != null) {
-                    inspectUrl(url)
-                }
-                super.onLoadResource(view, url)
-            }
         }
     }
 
-    private fun inspectUrl(url: String) {
-        val stream = MediaDetector.classify(url) ?: return
-        if (detectedStreams.putIfAbsent(stream.url, stream) == null) {
-            runOnUiThread { updateStreamsButton() }
-        }
+    private fun computeTopLevelNavSignature(url: String): String {
+        val uri = FilterRuleEngine.parseUriSafe(url) ?: return ""
+        val host = uri.host?.let { FilterRuleEngine.registrableDomain(it) } ?: return ""
+        val path = uri.path.orEmpty().trimEnd('/')
+        return "$host$path"
+    }
+
+    private fun injectBrowserShieldAndSniffer(view: WebView?, pageUrl: String) {
+        val wv = view ?: return
+        val enabled = adBlockEngine.isShieldEnabledForUrl(pageUrl)
+        val js = BrowserShieldScripts.buildInjectionScript(
+            shieldEnabled = enabled,
+            cosmeticSelectors = adBlockEngine.cosmeticSelectors
+        )
+        wv.evaluateJavascript(js, null)
     }
 
     private fun updateStreamsButton() {
-        btnStreams.text = "Streams (${detectedStreams.size})"
+        btnStreams.text = "Streams (${latestStreams.size})"
+    }
+
+    private fun updateShieldButton() {
+        btnShield.visibility = if (showingRoom) View.GONE else View.VISIBLE
+        val enabled = adBlockEngine.isShieldEnabledForUrl(currentBrowserUrl)
+        val count = adBlockEngine.blockedOnCurrentPage
+        if (enabled) {
+            btnShield.text = if (count > 0) "Shield ($count)" else "Shield: ON"
+            btnShield.setTextColor(Color.parseColor("#6EE7B7"))
+        } else {
+            btnShield.text = "Shield: OFF"
+            btnShield.setTextColor(Color.parseColor("#FCA5A5"))
+        }
     }
 
     private fun switchTab(showRoom: Boolean) {
         showingRoom = showRoom
-        roomWebView.visibility = if (showRoom) View.VISIBLE else View.GONE
+        roomPane.visibility = if (showRoom) View.VISIBLE else View.GONE
         browserWebView.visibility = if (showRoom) View.GONE else View.VISIBLE
+        nativePlayerController.setRoomTabVisibility(showRoom)
         etUrl.setText(
             if (showRoom) (roomWebView.url ?: prefs.getString("server_url", ""))
             else currentBrowserUrl
         )
         updateTabStyles()
+        updateShieldButton()
     }
 
     private fun updateTabStyles() {
         btnTabRoom.alpha = if (showingRoom) 1.0f else 0.55f
         btnTabBrowser.alpha = if (!showingRoom) 1.0f else 0.55f
+    }
+
+    private fun applyFullscreenMode(fullscreen: Boolean) {
+        val density = resources.displayMetrics.density
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        if (fullscreen) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            topModeBar.visibility = View.GONE
+            addressBar.visibility = View.GONE
+            nativePlayerHeader.visibility = View.GONE
+            roomWebView.visibility = View.GONE
+            nativePlayerContainer.layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            nativePlayerView.layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            topModeBar.visibility = View.VISIBLE
+            addressBar.visibility = View.VISIBLE
+            nativePlayerHeader.visibility = View.VISIBLE
+            roomWebView.visibility = View.VISIBLE
+            nativePlayerContainer.layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            nativePlayerView.layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                (225 * density).toInt()
+            )
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        }
     }
 
     private fun navigateCurrentTab() {
@@ -188,102 +431,107 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun sendStreamToRoom(videoUrl: String, audioUrl: String? = null) {
-        val pageTitle = browserWebView.title ?: "Detected Stream"
+    private fun openStreamSelector() {
+        StreamSelectorSheet.show(
+            context = this,
+            streams = latestStreams,
+            onSelectPlayback = { videoStream, audioStream ->
+                sendStreamSelectionToRoom(videoStream, audioStream)
+            },
+            onClearStreams = {
+                streamSniffer.clearForNewTopLevelPage(currentBrowserUrl)
+            }
+        )
+    }
+
+    private fun sendStreamSelectionToRoom(videoStream: DetectedStream, audioStream: DetectedStream?) {
+        val pageTitle = (browserWebView.title ?: videoStream.pageTitle ?: "Detected Stream").take(140)
+        val mergedHeaders = LinkedHashMap<String, String>(videoStream.requestHeaders)
+        if (audioStream != null) {
+            for ((k, v) in audioStream.requestHeaders) {
+                if (v.isNotBlank() && !mergedHeaders.containsKey(k)) {
+                    mergedHeaders[k] = v
+                }
+            }
+        }
+
+        val combinedLabel = if (audioStream != null) {
+            "${videoStream.resolutionBadge() ?: videoStream.container.uppercase()} + ${audioStream.language ?: audioStream.container.uppercase()} (Synced)"
+        } else {
+            videoStream.label
+        }
+
         switchTab(showRoom = true)
 
-        val jsVideo = JSONObject.quote(videoUrl)
-        val jsAudio = JSONObject.quote(audioUrl ?: "")
+        // 1. Immediately start hardware-synced playback in Native Media3 ExoPlayer with captured headers
+        nativePlayerController.loadNativePlayback(
+            videoUrl = videoStream.url,
+            audioUrl = audioStream?.url,
+            isHls = videoStream.isHls,
+            isDash = videoStream.isDash,
+            title = pageTitle,
+            label = combinedLabel,
+            headers = mergedHeaders,
+            autoPlay = true
+        )
+
+        // 2. Broadcast to Watch-Party Room via roomWebView (skipping redundant re-load on local ExoPlayer)
+        val headersJson = JSONObject()
+        for ((k, v) in mergedHeaders) {
+            if (!k.equals("Cookie", ignoreCase = true)) {
+                // Never broadcast user's session cookies to other room peers; pass Referer/Origin/UA hints only
+                headersJson.put(k, v)
+            }
+        }
+
+        val jsPayload = JSONObject().apply {
+            put("video_url", videoStream.url)
+            put("audio_url", audioStream?.url ?: "")
+            put("is_hls", videoStream.isHls)
+            put("is_dash", videoStream.isDash)
+            put("title", pageTitle)
+            put("label", combinedLabel)
+            put("headers", headersJson)
+            put("already_loaded_native", true)
+        }
+
+        val jsVideo = JSONObject.quote(videoStream.url)
+        val jsAudio = JSONObject.quote(audioStream?.url ?: "")
         val jsTitle = JSONObject.quote(pageTitle)
+        val jsPayloadArg = jsPayload.toString()
 
         roomWebView.evaluateJavascript(
-            "if (window.loadFromNativeApp) { window.loadFromNativeApp($jsVideo, $jsAudio, $jsTitle); true; } else { false; }"
+            """
+            (function() {
+              if (window.loadFromNativePayload) {
+                window.loadFromNativePayload($jsPayloadArg);
+                return true;
+              }
+              if (window.loadFromNativeApp) {
+                window.loadFromNativeApp($jsVideo, $jsAudio, $jsTitle);
+                return true;
+              }
+              return false;
+            })();
+            """.trimIndent()
         ) { result ->
             if (result != "true") {
                 val base = (roomWebView.url ?: prefs.getString("server_url", "https://streamsync-pj98.onrender.com/"))!!
                 val uri = Uri.parse(base).buildUpon()
-                    .appendQueryParameter("video", videoUrl)
+                    .appendQueryParameter("video", videoStream.url)
                     .appendQueryParameter("title", pageTitle)
-                if (!audioUrl.isNullOrEmpty()) {
-                    uri.appendQueryParameter("audio", audioUrl)
+                if (audioStream != null) {
+                    uri.appendQueryParameter("audio", audioStream.url)
                 }
                 roomWebView.loadUrl(uri.build().toString())
             }
         }
-        Toast.makeText(this, "Stream loaded in StreamSync Room", Toast.LENGTH_SHORT).show()
-    }
 
-    private fun showDetectedStreamsDialog() {
-        val items = detectedStreams.values.toList()
-        if (items.isEmpty()) {
-            Toast.makeText(
-                this,
-                "No streams detected yet. Open a page in the Browser tab and press play.",
-                Toast.LENGTH_LONG
-            ).show()
-            return
-        }
-
-        val videos = items.filter { it.kind == StreamKind.VIDEO || it.kind == StreamKind.COMBINED }
-        val audios = items.filter { it.kind == StreamKind.AUDIO }
-
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(40, 24, 40, 12)
-        }
-
-        if (videos.isNotEmpty() && audios.isNotEmpty()) {
-            val pairHeader = TextView(this).apply {
-                text = "Pair Separated Video + Audio"
-                textSize = 15f
-                setPadding(0, 0, 0, 8)
-            }
-            val videoSpinner = Spinner(this).apply {
-                adapter = ArrayAdapter(
-                    this@MainActivity,
-                    android.R.layout.simple_spinner_dropdown_item,
-                    videos.map { "${it.label}: ${it.url.take(48)}" }
-                )
-            }
-            val audioSpinner = Spinner(this).apply {
-                adapter = ArrayAdapter(
-                    this@MainActivity,
-                    android.R.layout.simple_spinner_dropdown_item,
-                    audios.map { "${it.label}: ${it.url.take(48)}" }
-                )
-            }
-            val pairBtn = Button(this).apply {
-                text = "Pair & Play in Room"
-            }
-            container.addView(pairHeader)
-            container.addView(videoSpinner)
-            container.addView(audioSpinner)
-            container.addView(pairBtn)
-
-            val dialog = AlertDialog.Builder(this)
-                .setTitle("Detected Streams (${items.size})")
-                .setView(container)
-                .setItems(items.map { "${it.label}\n${it.url.take(70)}" }.toTypedArray()) { _, which ->
-                    sendStreamToRoom(items[which].url)
-                }
-                .setNegativeButton("Close", null)
-                .show()
-
-            pairBtn.setOnClickListener {
-                val v = videos[videoSpinner.selectedItemPosition]
-                val a = audios[audioSpinner.selectedItemPosition]
-                dialog.dismiss()
-                sendStreamToRoom(v.url, a.url)
-            }
-        } else {
-            AlertDialog.Builder(this)
-                .setTitle("Detected Streams (${items.size})")
-                .setItems(items.map { "${it.label}\n${it.url.take(70)}" }.toTypedArray()) { _, which ->
-                    sendStreamToRoom(items[which].url)
-                }
-                .setNegativeButton("Close", null)
-                .show()
-        }
+        Toast.makeText(
+            this,
+            if (audioStream != null) "Paired Video + Audio loaded in ExoPlayer & Room" else "Stream loaded in ExoPlayer & Room",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     private fun checkForUpdates() {
@@ -338,7 +586,7 @@ class MainActivity : AppCompatActivity() {
                     } else if (apkUrl != null) {
                         AlertDialog.Builder(this)
                             .setTitle("Update Available")
-                            .setMessage("Installed: v$currentVersion (build $currentBuild)\nNew version: v0.1.$remoteBuild (build $remoteBuild)")
+                            .setMessage("Installed: v$currentVersion (build $currentBuild)\nNew version: v0.2.$remoteBuild (build $remoteBuild)")
                             .setPositiveButton("Download & Install") { _, _ ->
                                 downloadAndInstallApk(apkUrl, remoteBuild)
                             }
@@ -419,6 +667,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        streamSniffer.shutdown()
+        nativePlayerController.release()
         networkExecutor.shutdownNow()
     }
 }

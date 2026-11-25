@@ -36,14 +36,14 @@ jobs:
           echo "$ANDROID_KEYSTORE_B64" | base64 -d > "${{ runner.temp }}/streamsync.jks"
           echo "STREAMSYNC_KEYSTORE_PATH=${{ runner.temp }}/streamsync.jks" >> $GITHUB_ENV
 
-      - name: Build Debug APK
+      - name: Run Unit Tests & Build Debug APK
         working-directory: android
         env:
           STREAMSYNC_BUILD_NUMBER: ${{ github.run_number }}
           STREAMSYNC_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS || 'streamsync' }}
           STREAMSYNC_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'streamsync' }}
           STREAMSYNC_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS || 'streamsync' }}
-        run: gradle assembleDebug
+        run: gradle testDebugUnitTest assembleDebug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
@@ -56,6 +56,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: android-build-${{ github.run_number }}
-          name: StreamSync Android v0.1.${{ github.run_number }} (build ${{ github.run_number }})
+          name: StreamSync Android v0.2.${{ github.run_number }} (build ${{ github.run_number }})
           body: Deterministic Android build #${{ github.run_number }}
           files: android/app/build/outputs/apk/debug/app-debug.apk

@@ -5,3 +5,7 @@ __pycache__/
 .env
 .vercel/
 *.log
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties

@@ -17,6 +17,7 @@ def test_create_room_and_summary():
     assert summary.status_code == 200
     assert summary.json()["room_id"] == room_id
     assert summary.json()["member_count"] == 0
+    assert summary.json()["control_mode"] == "host_only"
 
 
 def test_websocket_room_sync_media_and_chat():
@@ -29,6 +30,7 @@ def test_websocket_room_sync_media_and_chat():
         state1 = ws1.receive_json()
         assert state1["type"] == "room_state"
         assert state1["host_id"] == state1["client_id"]
+        assert state1["control_mode"] == "host_only"
 
         # Alice receives notification that Bob joined
         joined_evt = ws1.receive_json()
@@ -39,7 +41,7 @@ def test_websocket_room_sync_media_and_chat():
         assert state2["type"] == "room_state"
         assert len(state2["members"]) == 2
 
-        # Alice loads a seamlessly paired video+audio stream
+        # Alice loads a seamlessly paired video+audio stream with Referer header hint
         ws1.send_json(
             {
                 "type": "load_media",
@@ -49,10 +51,14 @@ def test_websocket_room_sync_media_and_chat():
                     "playback": {
                         "mode": "paired",
                         "video_url": "https://cdn.example.com/1080v.mp4",
-                        "audio_url": "https://cdn.example.com/audio.m4a",
+                        "audio_url": "https://cdn.example.com/audio.m3u8",
                         "is_hls": False,
                         "is_dash": False,
                         "label": "1080p (Unified Video + Audio)",
+                        "headers": {
+                            "Referer": "https://example.com/watch?v=1",
+                            "Cookie": "secret=should_be_stripped",
+                        },
                     },
                 },
             }
@@ -62,6 +68,8 @@ def test_websocket_room_sync_media_and_chat():
         assert m1["type"] == "media_changed"
         assert m2["type"] == "media_changed"
         assert m2["media"]["playback"]["mode"] == "paired"
+        # Referer is preserved for Electron/ExoPlayer peers while sensitive Cookie is stripped!
+        assert m2["media"]["playback"]["headers"] == {"Referer": "https://example.com/watch?v=1"}
 
         # Alice presses play at 42.5s -> Bob receives sync event
         ws1.send_json({"type": "sync", "action": "play", "is_playing": True, "position": 42.5, "playback_rate": 1.0})
@@ -78,3 +86,84 @@ def test_websocket_room_sync_media_and_chat():
         assert c1["type"] == "chat"
         assert c1["message"]["text"] == "Ciao Alice!"
         assert c2["message"]["nickname"] == "Bob"
+
+
+def test_host_only_permissions_and_control_mode_toggle():
+    room_id = client.post("/api/rooms").json()["room_id"]
+
+    with (
+        client.websocket_connect(f"/ws/rooms/{room_id}?nickname=HostAlice") as ws_host,
+        client.websocket_connect(f"/ws/rooms/{room_id}?nickname=GuestBob") as ws_guest,
+    ):
+        ws_host.receive_json()  # room_state
+        ws_host.receive_json()  # members_updated
+        ws_guest.receive_json()  # room_state
+
+        # GuestBob tries to sync while host_only is active -> receives sync_denied
+        ws_guest.send_json({"type": "sync", "action": "play", "is_playing": True, "position": 10.0})
+        denied = ws_guest.receive_json()
+        assert denied["type"] == "sync_denied"
+
+        # HostAlice enables collaborative mode ("everyone")
+        ws_host.send_json({"type": "set_control_mode", "control_mode": "everyone"})
+        cm1 = ws_host.receive_json()
+        cm2 = ws_guest.receive_json()
+        assert cm1["type"] == "control_mode_changed"
+        assert cm2["control_mode"] == "everyone"
+
+        # Now GuestBob can sync playback for the room
+        ws_guest.send_json({"type": "sync", "action": "seek", "is_playing": True, "position": 88.0})
+        sync_to_host = ws_host.receive_json()
+        assert sync_to_host["type"] == "sync"
+        assert sync_to_host["position"] == 88.0
+        assert sync_to_host["by"] == "GuestBob"
+
+
+def test_pause_for_all_buffering_barrier_and_auto_resume():
+    room_id = client.post("/api/rooms").json()["room_id"]
+
+    with (
+        client.websocket_connect(f"/ws/rooms/{room_id}?nickname=Alice") as ws1,
+        client.websocket_connect(f"/ws/rooms/{room_id}?nickname=Bob") as ws2,
+    ):
+        ws1.receive_json()
+        ws1.receive_json()
+        ws2.receive_json()
+
+        # Alice loads media with auto_play=True
+        ws1.send_json(
+            {
+                "type": "load_media",
+                "auto_play": True,
+                "media": {
+                    "title": "Action Film",
+                    "source_url": "https://example.com/film",
+                    "playback": {
+                        "mode": "paired",
+                        "video_url": "https://cdn.example.com/v.m3u8",
+                        "audio_url": "https://cdn.example.com/a_it.m3u8",
+                        "is_hls": True,
+                    },
+                },
+            }
+        )
+        ws1.receive_json()
+        ws2.receive_json()
+
+        # Bob starts buffering -> room pauses for ALL viewers
+        ws2.send_json({"type": "buffer_state", "buffering": True, "position": 12.4})
+        b1 = ws1.receive_json()
+        b2 = ws2.receive_json()
+        assert b1["type"] == "buffer_barrier"
+        assert b1["active"] is True
+        assert "Bob" in b1["waiting_for"]
+        assert b2["is_playing"] is False
+
+        # Bob finishes buffering -> room automatically resumes synchronized playback for ALL viewers
+        ws2.send_json({"type": "buffer_state", "buffering": False, "position": 12.4})
+        r1 = ws1.receive_json()
+        r2 = ws2.receive_json()
+        assert r1["type"] == "buffer_barrier"
+        assert r1["active"] is False
+        assert r1["is_playing"] is True
+        assert r2["is_playing"] is True

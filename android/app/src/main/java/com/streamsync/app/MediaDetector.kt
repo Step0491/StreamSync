@@ -1,56 +1,69 @@
 package com.streamsync.app
 
-enum class StreamKind {
-    COMBINED,
-    VIDEO,
-    AUDIO
-}
+import com.streamsync.app.extractor.DetectedStream
+import com.streamsync.app.extractor.ManifestParser
+import com.streamsync.app.extractor.StreamKind
+import java.util.Locale
 
-data class DetectedStream(
-    val url: String,
-    val kind: StreamKind,
-    val label: String
-)
-
+/**
+ * Lightweight synchronous URL classifier retained as a fast stateless helper,
+ * backed by the upgraded ManifestParser heuristics.
+ */
 object MediaDetector {
-    private val segmentRegex = Regex("""\.(ts|m4s|cmfv|cmfa|vtt|srt|key)(\?|$)""", RegexOption.IGNORE_CASE)
-    private val hlsRegex = Regex("""\.m3u8(\?|$)""", RegexOption.IGNORE_CASE)
-    private val dashRegex = Regex("""\.mpd(\?|$)""", RegexOption.IGNORE_CASE)
-    private val videoRegex = Regex("""\.(mp4|webm|m4v|mov)(\?|$)""", RegexOption.IGNORE_CASE)
-    private val audioRegex = Regex("""\.(m4a|mp3|aac|ogg|opus|wav|flac)(\?|$)""", RegexOption.IGNORE_CASE)
-    private val videoHintRegex = Regex("""(video|vcodec|mime=video)""", RegexOption.IGNORE_CASE)
-    private val audioHintRegex = Regex("""(audio|acodec|mime=audio)""", RegexOption.IGNORE_CASE)
-    private val drmRegex = Regex("""(widevine|playready|fairplay|contentprotection)""", RegexOption.IGNORE_CASE)
 
-    fun classify(url: String): DetectedStream? {
-        if (!url.startsWith("http://") && !url.startsWith("https://")) return null
-        if (segmentRegex.containsMatchIn(url) || drmRegex.containsMatchIn(url)) return null
+    fun classifyQuickUrl(url: String, contentType: String = ""): DetectedStream? {
+        if (ManifestParser.isSegmentOrNoiseUrl(url)) return null
+        val cleanUrl = ManifestParser.stripRangeQueryParams(url)
+        val normKey = ManifestParser.normalizeUrlForKey(cleanUrl)
+        val ext = ManifestParser.guessContainerExt(cleanUrl, contentType)
+        val lowerUrl = cleanUrl.lowercase(Locale.ROOT)
+        val lowerCt = contentType.lowercase(Locale.ROOT)
 
-        if (hlsRegex.containsMatchIn(url)) {
-            return DetectedStream(url, StreamKind.COMBINED, "HLS Stream (.m3u8)")
-        }
-        if (dashRegex.containsMatchIn(url)) {
-            return DetectedStream(url, StreamKind.COMBINED, "DASH Stream (.mpd)")
-        }
-
-        val isAudio = audioRegex.containsMatchIn(url) || audioHintRegex.containsMatchIn(url)
-        val isVideo = videoRegex.containsMatchIn(url) || videoHintRegex.containsMatchIn(url)
-
-        if (isAudio && !isVideo) {
-            val ext = audioRegex.find(url)?.groupValues?.getOrNull(1)?.uppercase() ?: "AUDIO"
-            return DetectedStream(url, StreamKind.AUDIO, "Audio Track ($ext)")
-        }
-
-        if (isVideo) {
-            val ext = videoRegex.find(url)?.groupValues?.getOrNull(1)?.uppercase() ?: "VIDEO"
-            val isVideoOnly = videoHintRegex.containsMatchIn(url) && !url.contains("audio", ignoreCase = true)
+        if (ext == "m3u8" || lowerCt.contains("mpegurl")) {
             return DetectedStream(
-                url = url,
-                kind = if (isVideoOnly) StreamKind.VIDEO else StreamKind.COMBINED,
-                label = if (isVideoOnly) "Video Track ($ext)" else "Video ($ext)"
+                id = normKey,
+                url = cleanUrl,
+                normalizedUrl = normKey,
+                kind = StreamKind.COMBINED,
+                container = "m3u8",
+                label = "HLS Stream (.m3u8)",
+                isHls = true
+            )
+        }
+        if (ext == "mpd" || lowerCt.contains("dash+xml")) {
+            return DetectedStream(
+                id = normKey,
+                url = cleanUrl,
+                normalizedUrl = normKey,
+                kind = StreamKind.COMBINED,
+                container = "mpd",
+                label = "DASH Stream (.mpd)",
+                isDash = true
             )
         }
 
-        return null
+        val hasMediaSignal = Regex("""\.(mp4|webm|m4v|mov|m4a|mp3|aac|ogg|opus|wav|flac)(\?|$)""", RegexOption.IGNORE_CASE)
+            .containsMatchIn(cleanUrl) ||
+            lowerCt.startsWith("video/") ||
+            lowerCt.startsWith("audio/") ||
+            lowerUrl.contains("mime=video") ||
+            lowerUrl.contains("mime=audio")
+
+        if (!hasMediaSignal) return null
+
+        val probe = ManifestParser.classifyByUrlAndMimeHints(cleanUrl, lowerUrl, lowerCt)
+        val label = when (probe.kind) {
+            StreamKind.AUDIO_ONLY -> "Audio Track (${ext.uppercase(Locale.ROOT)})"
+            StreamKind.VIDEO_ONLY -> "Video-Only Track (${ext.uppercase(Locale.ROOT)})"
+            StreamKind.COMBINED -> "Video (${ext.uppercase(Locale.ROOT)})"
+        }
+        return DetectedStream(
+            id = normKey,
+            url = cleanUrl,
+            normalizedUrl = normKey,
+            kind = probe.kind,
+            container = ext,
+            label = label
+        )
     }
 }

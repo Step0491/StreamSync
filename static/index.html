@@ -19,6 +19,7 @@
       <span class="logo-dot"></span>
       <span>StreamSync</span>
       <span id="room-status-badge" class="badge badge-muted">Solo Mode</span>
+      <span id="rtt-badge" class="pill hidden" title="Synchronized Room Clock RTT">RTT --</span>
     </div>
     <div class="room-bar">
       <input id="nickname-input" type="text" placeholder="Your name" maxlength="24" class="input-sm" />
@@ -35,8 +36,8 @@
       <section class="card">
         <h1>Load Public Stream</h1>
         <p class="subtitle">
-          Paste a public, non-DRM streaming page or direct media URL (<code>.mp4</code>, <code>.m3u8</code>, <code>.mpd</code>).
-          Separated video &amp; audio tracks are automatically unified into one seamless stream.
+          Paste a public, non-DRM streaming page or direct media URL (<code>.mp4</code>, <code>.m3u8</code>, <code>.mpd</code>),
+          or capture streams via the built-in Browser tab. Separated video &amp; audio tracks stream in real-time sync.
         </p>
 
         <form id="extract-form" class="url-form">
@@ -67,6 +68,11 @@
           </div>
         </div>
 
+        <div id="buffer-barrier-banner" class="buffer-banner hidden" role="status"></div>
+        <div id="native-bridge-note" class="native-player-note hidden">
+          Streaming via Native Android ExoPlayer (Hardware-Locked Video + Audio Sync)
+        </div>
+
         <video id="video-player" controls playsinline></video>
         <audio id="audio-player" preload="auto"></audio>
 
@@ -87,15 +93,15 @@
           <div id="pair-controls" class="pair-controls hidden">
             <div class="pair-selects">
               <label>
-                Video Track
+                Video Track (1 URL)
                 <select id="pair-video-select"></select>
               </label>
               <label>
-                Audio Track
+                Audio Track (1 URL)
                 <select id="pair-audio-select"></select>
               </label>
             </div>
-            <button id="pair-play-btn" type="button" class="btn-secondary">Switch to Selected Video + Audio Pair</button>
+            <button id="pair-play-btn" type="button" class="btn-secondary">Play Selected Video + Audio in Sync</button>
           </div>
 
           <div class="tabs" role="tablist">
@@ -117,6 +123,11 @@
       <div class="sidebar-header">
         <h2>Room <span id="sidebar-room-code"></span></h2>
         <span id="member-count" class="pill">0 online</span>
+      </div>
+
+      <div class="room-control-row">
+        <span id="control-mode-label" class="pill">Controls: Host Only</span>
+        <button id="toggle-control-mode-btn" type="button" class="btn-sm btn-secondary hidden">Allow Everyone</button>
       </div>
 
       <div id="member-list" class="member-list"></div>

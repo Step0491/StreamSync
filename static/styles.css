@@ -9,6 +9,7 @@
   --accent-hover: #4f46e5;
   --danger: #ef4444;
   --success: #10b981;
+  --warning: #f59e0b;
 }
 
 * { box-sizing: border-box; }
@@ -257,6 +258,25 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   color: #fca5a5;
 }
 
+.buffer-banner {
+  padding: 0.52rem 0.75rem;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  color: #fcd34d;
+}
+
+.native-player-note {
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  background: rgba(99, 102, 241, 0.14);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  color: #a5b4fc;
+}
+
 video {
   width: 100%;
   max-height: 480px;
@@ -361,6 +381,14 @@ video {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.room-control-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+  flex-wrap: wrap;
 }
 
 .member-list {

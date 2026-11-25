@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/rootLayout"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#0B0F17"
@@ -7,6 +9,7 @@
 
     <!-- Top Mode Switcher -->
     <LinearLayout
+        android:id="@+id/topModeBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="#131A26"
@@ -19,7 +22,7 @@
             android:layout_width="0dp"
             android:layout_height="38dp"
             android:layout_marginEnd="4dp"
-            android:layout_weight="1"
+            android:layout_weight="0.95"
             android:maxLines="1"
             android:minWidth="0dp"
             android:paddingStart="6dp"
@@ -33,7 +36,7 @@
             android:layout_width="0dp"
             android:layout_height="38dp"
             android:layout_marginEnd="4dp"
-            android:layout_weight="1.15"
+            android:layout_weight="1.1"
             android:maxLines="1"
             android:minWidth="0dp"
             android:paddingStart="6dp"
@@ -60,7 +63,7 @@
             android:id="@+id/btnUpdate"
             android:layout_width="0dp"
             android:layout_height="38dp"
-            android:layout_weight="1"
+            android:layout_weight="0.95"
             android:maxLines="1"
             android:minWidth="0dp"
             android:paddingStart="6dp"
@@ -70,8 +73,9 @@
             android:textSize="12sp" />
     </LinearLayout>
 
-    <!-- Address Bar -->
+    <!-- Address Bar + Per-Site AdBlock Shield Toggle -->
     <LinearLayout
+        android:id="@+id/addressBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="#131A26"
@@ -80,6 +84,21 @@
         android:paddingStart="8dp"
         android:paddingEnd="8dp"
         android:paddingBottom="8dp">
+
+        <Button
+            android:id="@+id/btnShield"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:layout_marginEnd="6dp"
+            android:backgroundTint="#1B2434"
+            android:minWidth="0dp"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:text="Shield: ON"
+            android:textAllCaps="false"
+            android:textColor="#6EE7B7"
+            android:textSize="11sp"
+            android:visibility="gone" />
 
         <EditText
             android:id="@+id/etUrl"
@@ -102,21 +121,85 @@
             android:id="@+id/btnGo"
             android:layout_width="wrap_content"
             android:layout_height="40dp"
+            android:minWidth="52dp"
             android:text="Go"
+            android:textAllCaps="false"
             android:textSize="13sp" />
     </LinearLayout>
 
-    <!-- WebViews Container -->
+    <!-- Main Content Container -->
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1">
 
-        <WebView
-            android:id="@+id/roomWebView"
+        <!-- Room Pane: Docked Native Media3 ExoPlayer + Shared Room WebView -->
+        <LinearLayout
+            android:id="@+id/roomPane"
             android:layout_width="match_parent"
-            android:layout_height="match_parent" />
+            android:layout_height="match_parent"
+            android:orientation="vertical">
 
+            <LinearLayout
+                android:id="@+id/nativePlayerContainer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#05070B"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:id="@+id/nativePlayerHeader"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="#131A26"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingStart="10dp"
+                    android:paddingTop="4dp"
+                    android:paddingEnd="10dp"
+                    android:paddingBottom="4dp">
+
+                    <TextView
+                        android:id="@+id/tvNativePlayerTitle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:text="StreamSync Player"
+                        android:textColor="#E6EDF7"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvNativePlayerBadge"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:text="ExoPlayer"
+                        android:textColor="#A5B4FC"
+                        android:textSize="11sp" />
+                </LinearLayout>
+
+                <androidx.media3.ui.PlayerView
+                    android:id="@+id/nativePlayerView"
+                    android:layout_width="match_parent"
+                    android:layout_height="225dp"
+                    android:background="#000000"
+                    app:resize_mode="fit"
+                    app:show_buffering="always"
+                    app:use_controller="true" />
+            </LinearLayout>
+
+            <WebView
+                android:id="@+id/roomWebView"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+        </LinearLayout>
+
+        <!-- Embedded Ad-Filtered Stream Discovery Browser -->
         <WebView
             android:id="@+id/browserWebView"
             android:layout_width="match_parent"
