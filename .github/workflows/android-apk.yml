@@ -29,12 +29,13 @@ jobs:
           gradle-version: '8.7'
 
       - name: Decode Persistent Signing Keystore (if configured)
-        if: ${{ secrets.ANDROID_KEYSTORE_B64 != '' }}
         env:
           ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
-          echo "$ANDROID_KEYSTORE_B64" | base64 -d > "${{ runner.temp }}/streamsync.jks"
-          echo "STREAMSYNC_KEYSTORE_PATH=${{ runner.temp }}/streamsync.jks" >> $GITHUB_ENV
+          if [ -n "$ANDROID_KEYSTORE_B64" ]; then
+            echo "$ANDROID_KEYSTORE_B64" | base64 -d > "${{ runner.temp }}/streamsync.jks"
+            echo "STREAMSYNC_KEYSTORE_PATH=${{ runner.temp }}/streamsync.jks" >> $GITHUB_ENV
+          fi
 
       - name: Run Unit Tests & Build Debug APK
         working-directory: android
