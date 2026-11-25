@@ -574,7 +574,7 @@ class MainActivity : AppCompatActivity() {
 
         networkExecutor.execute {
             try {
-                val conn = (URL("https://api.github.com/repos/Step0491/StreamSync/releases/latest")
+                val conn = (URL("https://api.github.com/repos/Step0491/StreamSync/releases?per_page=15")
                     .openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
                     connectTimeout = 10_000
@@ -589,22 +589,34 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 val body = conn.inputStream.bufferedReader().use { it.readText() }
-                val json = JSONObject(body)
-                val tagName = json.optString("tag_name", "")
-                val remoteBuild = Regex("""(\d+)$""").find(tagName)?.groupValues?.getOrNull(1)?.toIntOrNull()
-                    ?: throw IllegalStateException("Invalid release tag: $tagName")
-
-                val assets = json.optJSONArray("assets")
+                val releases = org.json.JSONArray(body)
+                var bestBuild = -1
                 var apkUrl: String? = null
-                if (assets != null) {
+
+                for (rIdx in 0 until releases.length()) {
+                    val rel = releases.getJSONObject(rIdx)
+                    val tagName = rel.optString("tag_name", "")
+                    if (!tagName.startsWith("android-build-", ignoreCase = true)) continue
+                    val buildNum = Regex("""(\d+)$""").find(tagName)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
+                    val assets = rel.optJSONArray("assets") ?: continue
+                    var foundApk: String? = null
                     for (i in 0 until assets.length()) {
                         val asset = assets.getJSONObject(i)
                         if (asset.optString("name").endsWith(".apk")) {
-                            apkUrl = asset.optString("browser_download_url")
+                            foundApk = asset.optString("browser_download_url")
                             break
                         }
                     }
+                    if (foundApk != null && buildNum > bestBuild) {
+                        bestBuild = buildNum
+                        apkUrl = foundApk
+                    }
                 }
+
+                if (bestBuild < 0) {
+                    throw IllegalStateException("No android-build release with APK found")
+                }
+                val remoteBuild = bestBuild
 
                 runOnUiThread {
                     btnUpdate.isEnabled = true

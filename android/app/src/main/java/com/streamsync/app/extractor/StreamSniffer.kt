@@ -147,14 +147,32 @@ class StreamSniffer(
             return
         }
 
-        // Provide immediate optimistic classification for instant responsiveness while deep probe runs
+        // Always add an immediate optimistic entry (including for HLS/DASH!) so Cloudflare-protected
+        // or token-bound streams NEVER disappear if background HttpURLConnection probing gets 403/HTML.
         val quickExt = ManifestParser.guessContainerExt(cleanUrl, contentTypeHint)
         val lowerUrl = cleanUrl.lowercase(Locale.ROOT)
         val lowerCt = contentTypeHint.lowercase(Locale.ROOT)
         val isLikelyHls = quickExt == "m3u8" || lowerCt.contains("mpegurl") || lowerUrl.contains(".m3u8")
         val isLikelyDash = quickExt == "mpd" || lowerCt.contains("dash+xml") || lowerUrl.contains(".mpd")
 
-        if (!isLikelyHls && !isLikelyDash) {
+        if (isLikelyHls || isLikelyDash) {
+            streamsByKey.putIfAbsent(
+                normKey,
+                DetectedStream(
+                    id = normKey,
+                    url = cleanUrl,
+                    normalizedUrl = normKey,
+                    kind = StreamKind.COMBINED,
+                    container = if (isLikelyHls) "m3u8" else "mpd",
+                    label = if (isLikelyHls) "HLS Stream (.m3u8)" else "DASH Stream (.mpd)",
+                    isHls = isLikelyHls,
+                    isDash = isLikelyDash,
+                    pageTitle = pageTitle,
+                    requestHeaders = headers
+                )
+            )
+            notifyUpdated()
+        } else {
             val quickHint = ManifestParser.classifyByUrlAndMimeHints(cleanUrl, lowerUrl, lowerCt)
             val quickLabel = when (quickHint.kind) {
                 StreamKind.AUDIO_ONLY -> "Audio Track (${quickExt.uppercase(Locale.ROOT)})"
@@ -170,6 +188,8 @@ class StreamSniffer(
                     kind = quickHint.kind,
                     container = quickExt,
                     label = quickLabel,
+                    durationSec = ManifestParser.extractQueryDurationSec(cleanUrl),
+                    contentLength = ManifestParser.extractQueryContentLength(cleanUrl),
                     pageTitle = pageTitle,
                     requestHeaders = headers
                 )

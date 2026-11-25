@@ -35,7 +35,8 @@ object StreamSelectorSheet {
         COMBINED,
         PAIR,
         VIDEO_ONLY,
-        AUDIO_ONLY
+        AUDIO_ONLY,
+        MANUAL_URLS
     }
 
     fun show(
@@ -146,6 +147,7 @@ object StreamSelectorSheet {
         root.addView(contentScroll)
 
         var activeTab = when {
+            streams.isEmpty() -> SheetTab.MANUAL_URLS
             combined.isEmpty() && videoOnly.isNotEmpty() && audioOnly.isNotEmpty() -> SheetTab.PAIR
             combined.isNotEmpty() -> SheetTab.COMBINED
             videoOnly.isNotEmpty() -> SheetTab.VIDEO_ONLY
@@ -245,6 +247,17 @@ object StreamSelectorSheet {
                         }
                     )
                 }
+                SheetTab.MANUAL_URLS -> {
+                    renderManualUrlsTab(
+                        context = context,
+                        container = contentContainer,
+                        dp = ::dp,
+                        onPlayManual = { v, a ->
+                            dialog.dismiss()
+                            onSelectPlayback(v, a)
+                        }
+                    )
+                }
             }
         }
 
@@ -252,7 +265,8 @@ object StreamSelectorSheet {
             SheetTab.COMBINED to "Combined (${combined.size})",
             SheetTab.PAIR to "Pair V + A",
             SheetTab.VIDEO_ONLY to "Video-Only (${videoOnly.size})",
-            SheetTab.AUDIO_ONLY to "Audio-Only (${audioOnly.size})"
+            SheetTab.AUDIO_ONLY to "Audio-Only (${audioOnly.size})",
+            SheetTab.MANUAL_URLS to "Manual URLs"
         )
 
         for ((tab, title) in tabSpecs) {
@@ -279,6 +293,126 @@ object StreamSelectorSheet {
             }
         }
         dialog.show()
+    }
+
+    private fun renderManualUrlsTab(
+        context: Context,
+        container: LinearLayout,
+        dp: (Int) -> Int,
+        onPlayManual: (DetectedStream, DetectedStream?) -> Unit
+    ) {
+        val box = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBg("#1B2434", "#283348", dp(10))
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+        }
+
+        val infoTv = TextView(context).apply {
+            text = "Paste 1 Video URL + optional 1 Audio URL directly (e.g. from Video DownloadHelper). Plays natively in ExoPlayer & syncs to Room, bypassing yt-dlp / Cloudflare."
+            setTextColor(Color.parseColor("#93A4BD"))
+            textSize = 12f
+        }
+
+        val vLabel = TextView(context).apply {
+            text = "Video URL (Combined or Video-Only)"
+            setTextColor(Color.parseColor("#E6EDF7"))
+            textSize = 13f
+            setTypeface(typeface, Typeface.BOLD)
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.topMargin = dp(10)
+            layoutParams = lp
+        }
+
+        val vInput = android.widget.EditText(context).apply {
+            hint = "https://.../video.mp4 or .m3u8"
+            setTextColor(Color.parseColor("#E6EDF7"))
+            setHintTextColor(Color.parseColor("#64748B"))
+            textSize = 12.5f
+            isSingleLine = true
+            background = roundedBg("#0B0F17", "#283348", dp(8))
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.topMargin = dp(6)
+            layoutParams = lp
+        }
+
+        val aLabel = TextView(context).apply {
+            text = "Audio URL (Optional — for separated audio track)"
+            setTextColor(Color.parseColor("#E6EDF7"))
+            textSize = 13f
+            setTypeface(typeface, Typeface.BOLD)
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.topMargin = dp(12)
+            layoutParams = lp
+        }
+
+        val aInput = android.widget.EditText(context).apply {
+            hint = "https://.../audio.m4a or .m3u8 (optional)"
+            setTextColor(Color.parseColor("#E6EDF7"))
+            setHintTextColor(Color.parseColor("#64748B"))
+            textSize = 12.5f
+            isSingleLine = true
+            background = roundedBg("#0B0F17", "#283348", dp(8))
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.topMargin = dp(6)
+            lp.bottomMargin = dp(14)
+            layoutParams = lp
+        }
+
+        val playBtn = createActionButton(
+            context,
+            "Play Direct URL(s) in ExoPlayer & Room",
+            "#6366F1",
+            "#FFFFFF",
+            dp(14),
+            dp(11)
+        ).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            setOnClickListener {
+                val vUrl = vInput.text.toString().trim()
+                val aUrl = aInput.text.toString().trim()
+                if (!vUrl.startsWith("http://", ignoreCase = true) && !vUrl.startsWith("https://", ignoreCase = true)) {
+                    Toast.makeText(context, "Enter a valid http(s) Video URL", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                val vLower = vUrl.lowercase()
+                val vStream = DetectedStream(
+                    id = vUrl,
+                    url = vUrl,
+                    normalizedUrl = vUrl,
+                    kind = if (aUrl.isNotEmpty()) StreamKind.VIDEO_ONLY else StreamKind.COMBINED,
+                    container = if (vLower.contains(".m3u8")) "m3u8" else if (vLower.contains(".mpd")) "mpd" else "mp4",
+                    label = if (aUrl.isNotEmpty()) "Manual Video + Audio" else "Manual Direct Stream",
+                    isHls = vLower.contains(".m3u8"),
+                    isDash = vLower.contains(".mpd")
+                )
+                val aStream = if (aUrl.startsWith("http://", ignoreCase = true) || aUrl.startsWith("https://", ignoreCase = true)) {
+                    val aLower = aUrl.lowercase()
+                    DetectedStream(
+                        id = aUrl,
+                        url = aUrl,
+                        normalizedUrl = aUrl,
+                        kind = StreamKind.AUDIO_ONLY,
+                        container = if (aLower.contains(".m3u8")) "m3u8" else if (aLower.contains(".mpd")) "mpd" else "m4a",
+                        label = "Manual Audio Track",
+                        isHls = aLower.contains(".m3u8"),
+                        isDash = aLower.contains(".mpd")
+                    )
+                } else {
+                    null
+                }
+                onPlayManual(vStream, aStream)
+            }
+        }
+
+        box.addView(infoTv)
+        box.addView(vLabel)
+        box.addView(vInput)
+        box.addView(aLabel)
+        box.addView(aInput)
+        box.addView(playBtn)
+        container.addView(box)
     }
 
     private fun renderPairBuilder(

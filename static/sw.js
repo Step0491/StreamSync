@@ -1,4 +1,4 @@
-const CACHE_NAME = "streamsync-v1";
+const CACHE_NAME = "streamsync-v2";
 const ASSETS = ["/", "/static/styles.css", "/static/app.js", "/manifest.json"];
 
 self.addEventListener("install", (event) => {
