@@ -57,6 +57,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: android-build-${{ github.run_number }}
-          name: StreamSync Android v0.2.${{ github.run_number }} (build ${{ github.run_number }})
+          name: StreamSync Android v0.3.${{ github.run_number }} (build ${{ github.run_number }})
           body: Deterministic Android build #${{ github.run_number }}
           files: android/app/build/outputs/apk/debug/app-debug.apk

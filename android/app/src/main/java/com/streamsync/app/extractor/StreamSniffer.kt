@@ -1,6 +1,7 @@
 package com.streamsync.app.extractor
 
 import android.media.MediaMetadataRetriever
+import android.util.Base64
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
@@ -593,6 +594,210 @@ class StreamSniffer(
 
     private fun notifyUpdated() {
         onStreamsUpdated(getSortedStreams())
+    }
+
+    /**
+     * Ingests a Cloudflare-authenticated HLS/DASH manifest body captured directly from
+     * GeckoView's webRequest.filterResponseData (zero second network request!).
+     */
+    fun ingestGeckoManifestBody(
+        rawUrl: String,
+        contentType: String,
+        manifestText: String,
+        headers: Map<String, String>
+    ) {
+        if (ManifestParser.isSegmentOrNoiseUrl(rawUrl)) return
+        val cleanUrl = ManifestParser.stripRangeQueryParams(rawUrl)
+        val normKey = ManifestParser.normalizeUrlForKey(cleanUrl)
+        val mergedHeaders = ensureUaAndReferer(headers)
+        val trimmed = manifestText.trimStart('\uFEFF', ' ', '\t', '\r', '\n')
+
+        if (trimmed.startsWith("#EXTM3U")) {
+            val existingOverride = childOverrides[normKey]
+            val parsed = ManifestParser.parseHlsManifest(cleanUrl, manifestText, mergedHeaders, activePageTitle)
+            if (parsed != null) {
+                // If this is a child media playlist whose Master already classified it as VIDEO_ONLY/AUDIO_ONLY,
+                // merge its exact #EXTINF duration/isLive back into the child AND parent Master!
+                if (existingOverride != null && parsed.streams.size == 1 && !parsed.streams[0].isMasterPlaylist) {
+                    val childDur = parsed.streams[0].durationSec
+                    val childLive = parsed.streams[0].isLive
+                    val upgradedChild = existingOverride.copy(
+                        durationSec = childDur ?: existingOverride.durationSec,
+                        isLive = childLive || existingOverride.isLive,
+                        requestHeaders = mergeHeaders(existingOverride.requestHeaders, mergedHeaders)
+                    )
+                    childOverrides[normKey] = upgradedChild
+                    streamsByKey[normKey] = upgradedChild
+
+                    // Propagate discovered duration to parent Master & sibling variants!
+                    val parentUrl = upgradedChild.parentManifestUrl
+                    if (parentUrl != null && (childDur != null || childLive)) {
+                        for ((k, s) in streamsByKey) {
+                            if (s.normalizedUrl == parentUrl || s.parentManifestUrl == parentUrl) {
+                                streamsByKey[k] = s.copy(
+                                    durationSec = s.durationSec ?: childDur,
+                                    isLive = s.isLive || childLive
+                                )
+                            }
+                        }
+                    }
+                    notifyUpdated()
+                    return
+                }
+
+                for ((childKey, childStream) in parsed.childOverrides) {
+                    val prev = streamsByKey[childKey]
+                    val merged = childStream.copy(
+                        durationSec = childStream.durationSec ?: prev?.durationSec,
+                        isLive = childStream.isLive || (prev?.isLive == true)
+                    )
+                    childOverrides[childKey] = merged
+                    if (streamsByKey.containsKey(childKey)) {
+                        streamsByKey[childKey] = merged
+                    }
+                }
+                for (s in parsed.streams) {
+                    val base = childOverrides[s.normalizedUrl] ?: s
+                    val prev = streamsByKey[s.normalizedUrl]
+                    streamsByKey[s.normalizedUrl] = base.copy(
+                        durationSec = base.durationSec ?: prev?.durationSec,
+                        isLive = base.isLive || (prev?.isLive == true)
+                    )
+                }
+                inspectedKeys.add(normKey)
+                notifyUpdated()
+                return
+            }
+        }
+
+        if (contentType.contains("dash+xml", ignoreCase = true) || trimmed.contains("<MPD", ignoreCase = true)) {
+            val parsed = ManifestParser.parseDashManifest(cleanUrl, manifestText, mergedHeaders, activePageTitle)
+            if (parsed != null) {
+                for (s in parsed.streams) {
+                    streamsByKey[s.normalizedUrl] = s
+                }
+                inspectedKeys.add(normKey)
+                notifyUpdated()
+            }
+        }
+    }
+
+    /**
+     * Ingests a direct/separated binary media response (MP4/WebM/M4A/Audio) captured directly
+     * from GeckoView's webRequest.onHeadersReceived + filterResponseData (first 64 KB head bytes).
+     */
+    fun ingestGeckoMediaResponse(
+        rawUrl: String,
+        contentType: String,
+        contentRange: String,
+        contentLength: String,
+        headBase64: String,
+        headers: Map<String, String>
+    ) {
+        if (ManifestParser.isSegmentOrNoiseUrl(rawUrl)) return
+        val cleanUrl = ManifestParser.stripRangeQueryParams(rawUrl)
+        val normKey = ManifestParser.normalizeUrlForKey(cleanUrl)
+        val mergedHeaders = ensureUaAndReferer(headers)
+
+        val totalSize: Long? = when {
+            contentRange.contains('/') -> contentRange.substringAfter('/').trim().toLongOrNull()?.takeIf { it > 0L }
+            !rawUrl.contains("range=", ignoreCase = true) && !rawUrl.contains("bytestart=", ignoreCase = true) ->
+                contentLength.trim().toLongOrNull()?.takeIf { it > 0L }
+            else -> ManifestParser.extractQueryContentLength(cleanUrl)
+        } ?: ManifestParser.extractQueryContentLength(cleanUrl)
+
+        if (totalSize != null && totalSize in 1..100_000L) return
+
+        val headBytes = if (headBase64.isNotBlank()) {
+            try {
+                Base64.decode(headBase64, Base64.DEFAULT)
+            } catch (_: Exception) {
+                ByteArray(0)
+            }
+        } else {
+            ByteArray(0)
+        }
+
+        val ext = ManifestParser.guessContainerExt(cleanUrl, contentType)
+        val probe = ManifestParser.inspectContainerBytes(headBytes, contentType, cleanUrl)
+        val prev = streamsByKey[normKey]
+
+        val width = probe.width ?: prev?.width
+        val height = probe.height ?: prev?.height
+        val durationSec = probe.durationSec ?: ManifestParser.extractQueryDurationSec(cleanUrl) ?: prev?.durationSec
+        val vcodec = probe.vcodec ?: prev?.vcodec
+        val acodec = probe.acodec ?: prev?.acodec
+        val effectiveSize = totalSize ?: prev?.contentLength
+        val bitrateKbps = if (effectiveSize != null && effectiveSize > 0 && durationSec != null && durationSec > 1.0) {
+            ((effectiveSize * 8.0) / (durationSec * 1000.0)).toInt().takeIf { it > 0 }
+        } else {
+            prev?.bitrateKbps
+        }
+
+        val codecLabel = listOfNotNull(
+            vcodec?.let { DetectedStream.friendlyCodec(it) },
+            acodec?.let { DetectedStream.friendlyCodec(it) }
+        ).joinToString("+").takeIf { it.isNotEmpty() }
+        val resPrefix = height?.let { "${it}p • " } ?: ""
+
+        val richLabel = when (probe.kind) {
+            StreamKind.COMBINED -> "${resPrefix}Video + Audio (${ext.uppercase(Locale.ROOT)}${codecLabel?.let { " • $it" } ?: ""})"
+            StreamKind.VIDEO_ONLY -> "${resPrefix}Video-Only (${ext.uppercase(Locale.ROOT)}${codecLabel?.let { " • $it" } ?: ""})"
+            StreamKind.AUDIO_ONLY -> "Audio-Only (${ext.uppercase(Locale.ROOT)}${codecLabel?.let { " • $it" } ?: ""})"
+        }
+
+        streamsByKey[normKey] = DetectedStream(
+            id = normKey,
+            url = cleanUrl,
+            normalizedUrl = normKey,
+            kind = probe.kind,
+            container = ext,
+            label = richLabel,
+            width = width,
+            height = height,
+            durationSec = durationSec,
+            vcodec = vcodec,
+            acodec = acodec,
+            bitrateKbps = bitrateKbps,
+            contentLength = effectiveSize,
+            isDrmProtected = probe.isDrmProtected,
+            pageTitle = activePageTitle,
+            requestHeaders = mergedHeaders
+        )
+        inspectedKeys.add(normKey)
+        notifyUpdated()
+    }
+
+    /**
+     * Enriches captured streams that still lack duration/dimensions using exact <video> DOM loadedmetadata.
+     */
+    fun enrichWithDomVideoMetadata(durationSec: Double, width: Int, height: Int) {
+        if (durationSec <= 0.5 && height <= 0) return
+        var changed = false
+        for ((k, s) in streamsByKey) {
+            val needDur = s.durationSec == null && !s.isLive && durationSec > 0.5
+            val needDims = s.kind != StreamKind.AUDIO_ONLY && s.height == null && width > 0 && height > 0
+            if (needDur || needDims) {
+                streamsByKey[k] = s.copy(
+                    durationSec = if (needDur) durationSec else s.durationSec,
+                    width = if (needDims) width else s.width,
+                    height = if (needDims) height else s.height
+                )
+                changed = true
+            }
+        }
+        if (changed) notifyUpdated()
+    }
+
+    private fun ensureUaAndReferer(headers: Map<String, String>): Map<String, String> {
+        val out = LinkedHashMap<String, String>(headers)
+        if (out.keys.none { it.equals("Referer", ignoreCase = true) } && activePageUrl.startsWith("http")) {
+            out["Referer"] = activePageUrl
+        }
+        if (out.keys.none { it.equals("User-Agent", ignoreCase = true) } && defaultUserAgent.isNotBlank()) {
+            out["User-Agent"] = defaultUserAgent
+        }
+        return out
     }
 
     fun shutdown() {

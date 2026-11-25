@@ -199,9 +199,9 @@
                 android:layout_weight="1" />
         </LinearLayout>
 
-        <!-- Embedded Ad-Filtered Stream Discovery Browser -->
-        <WebView
-            android:id="@+id/browserWebView"
+        <!-- Embedded Firefox GeckoView Browser (Real WebExtensions + filterResponseData) -->
+        <org.mozilla.geckoview.GeckoView
+            android:id="@+id/browserGeckoView"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:visibility="gone" />

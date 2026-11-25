@@ -1,0 +1,29 @@
+{
+  "manifest_version": 2,
+  "name": "StreamSync VDH-Grade Sniffer & Shield",
+  "version": "1.0.0",
+  "description": "Built-in GeckoView WebExtension using webRequest.onHeadersReceived + filterResponseData for Video DownloadHelper-grade media extraction and uBlock-style ad blocking.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "streamsync-sniffer@streamsync.app"
+    }
+  },
+  "permissions": [
+    "<all_urls>",
+    "webRequest",
+    "webRequestBlocking",
+    "nativeMessaging",
+    "geckoViewAddons"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "all_frames": true,
+      "run_at": "document_start"
+    }
+  ]
+}

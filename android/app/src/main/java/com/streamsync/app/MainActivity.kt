@@ -7,15 +7,12 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Message
 import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -33,13 +30,15 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.ui.PlayerView
 import com.streamsync.app.adblock.AdBlockEngine
-import com.streamsync.app.adblock.BrowserShieldScripts
 import com.streamsync.app.adblock.FilterRuleEngine
+import com.streamsync.app.browser.GeckoBrowserController
 import com.streamsync.app.extractor.DetectedStream
 import com.streamsync.app.extractor.StreamSniffer
 import com.streamsync.app.player.NativeRoomPlayerController
 import com.streamsync.app.ui.StreamSelectorSheet
+import org.json.JSONArray
 import org.json.JSONObject
+import org.mozilla.geckoview.GeckoView
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -57,7 +56,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvNativePlayerBadge: TextView
 
     private lateinit var roomWebView: WebView
-    private lateinit var browserWebView: WebView
+    private lateinit var browserGeckoView: GeckoView
     private lateinit var etUrl: EditText
     private lateinit var btnShield: Button
     private lateinit var btnTabRoom: Button
@@ -67,13 +66,14 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var adBlockEngine: AdBlockEngine
     private lateinit var streamSniffer: StreamSniffer
+    private lateinit var geckoBrowser: GeckoBrowserController
     private lateinit var nativePlayerController: NativeRoomPlayerController
 
     @Volatile
     private var latestStreams: List<DetectedStream> = emptyList()
     private var showingRoom = true
     private var currentBrowserUrl = "https://www.google.com"
-    private var lastClearedNavHostPath = ""
+    private var lastBrowserDomain = ""
     private val networkExecutor = Executors.newSingleThreadExecutor()
 
     private val prefs by lazy { getSharedPreferences("streamsync_prefs", MODE_PRIVATE) }
@@ -93,7 +93,7 @@ class MainActivity : AppCompatActivity() {
         tvNativePlayerBadge = findViewById(R.id.tvNativePlayerBadge)
 
         roomWebView = findViewById(R.id.roomWebView)
-        browserWebView = findViewById(R.id.browserWebView)
+        browserGeckoView = findViewById(R.id.browserGeckoView)
         etUrl = findViewById(R.id.etUrl)
         btnShield = findViewById(R.id.btnShield)
         btnTabRoom = findViewById(R.id.btnTabRoom)
@@ -109,13 +109,12 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putString("server_url", defaultServer).apply()
         }
 
-        // Initialize 3-Layer AdBlock Engine + Remote Filter Refresh
+        // Initialize AdBlock Engine (per-site state & popup/redirect shield)
         adBlockEngine = AdBlockEngine(applicationContext, prefs)
-        adBlockEngine.refreshRemoteFiltersAsync(networkExecutor)
 
         val defaultUa = WebSettings.getDefaultUserAgent(this)
 
-        // Initialize VDH-grade Multi-Signal Stream Sniffer & Manifest Parser with real WebView User-Agent
+        // Initialize VDH-grade Stream Sniffer fed directly by GeckoView WebExtension (filterResponseData)
         streamSniffer = StreamSniffer(
             defaultUserAgent = defaultUa,
             onStreamsUpdated = { sorted ->
@@ -128,6 +127,7 @@ class MainActivity : AppCompatActivity() {
             }
         )
 
+        // Initialize Native Media3 ExoPlayer Controller bridged to roomWebView
         nativePlayerController = NativeRoomPlayerController(
             context = this,
             playerContainer = nativePlayerContainer,
@@ -139,15 +139,36 @@ class MainActivity : AppCompatActivity() {
             onFullscreenToggle = { fullscreen -> applyFullscreenMode(fullscreen) }
         )
 
-        CookieManager.getInstance().setAcceptCookie(true)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(browserWebView, true)
+        // Initialize Mozilla GeckoView (Firefox Engine) + Built-In WebExtension Sniffer & Shield
+        geckoBrowser = GeckoBrowserController(
+            context = this,
+            geckoView = browserGeckoView,
+            adBlockEngine = adBlockEngine,
+            streamSniffer = streamSniffer,
+            onLocationChanged = { url ->
+                currentBrowserUrl = url
+                val dom = FilterRuleEngine.parseUriSafe(url)?.host?.let { FilterRuleEngine.registrableDomain(it) }.orEmpty()
+                if (dom.isNotEmpty() && dom != lastBrowserDomain) {
+                    lastBrowserDomain = dom
+                    adBlockEngine.resetPageCounter()
+                }
+                runOnUiThread {
+                    if (!showingRoom) etUrl.setText(url)
+                    updateShieldButton()
+                }
+            },
+            onTitleChanged = { _ -> },
+            onShieldStatsChanged = {
+                runOnUiThread { updateShieldButton() }
+            }
+        )
 
+        CookieManager.getInstance().setAcceptCookie(true)
         configureRoomWebView()
-        configureBrowserWebView()
 
         etUrl.setText(savedServer)
         roomWebView.loadUrl(savedServer)
-        browserWebView.loadUrl(currentBrowserUrl)
+        geckoBrowser.loadUrl(currentBrowserUrl)
 
         btnTabRoom.setOnClickListener { switchTab(showRoom = true) }
         btnTabBrowser.setOnClickListener { switchTab(showRoom = false) }
@@ -156,14 +177,15 @@ class MainActivity : AppCompatActivity() {
 
         btnShield.setOnClickListener {
             val enabledNow = adBlockEngine.toggleShieldForUrl(currentBrowserUrl)
+            geckoBrowser.syncShieldStateToExtension(currentBrowserUrl)
             val host = adBlockEngine.extractHost(currentBrowserUrl) ?: "this site"
             Toast.makeText(
                 this,
-                if (enabledNow) "Ad/Popup Shield enabled for $host" else "Shield paused for $host",
+                if (enabledNow) "Gecko Ad/Popup Shield enabled for $host" else "Shield paused for $host",
                 Toast.LENGTH_SHORT
             ).show()
             updateShieldButton()
-            browserWebView.reload()
+            geckoBrowser.reload()
         }
 
         btnGo.setOnClickListener { navigateCurrentTab() }
@@ -181,13 +203,18 @@ class MainActivity : AppCompatActivity() {
                 if (nativePlayerController.exitFullscreenIfNeeded()) {
                     return
                 }
-                val activeView = if (showingRoom) roomWebView else browserWebView
-                if (activeView.canGoBack()) {
-                    activeView.goBack()
-                } else if (!showingRoom) {
-                    switchTab(showRoom = true)
+                if (showingRoom) {
+                    if (roomWebView.canGoBack()) {
+                        roomWebView.goBack()
+                    } else {
+                        finish()
+                    }
                 } else {
-                    finish()
+                    if (geckoBrowser.canGoBack) {
+                        geckoBrowser.goBack()
+                    } else {
+                        switchTab(showRoom = true)
+                    }
                 }
             }
         })
@@ -210,143 +237,6 @@ class MainActivity : AppCompatActivity() {
         roomWebView.webViewClient = WebViewClient()
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun configureBrowserWebView() {
-        browserWebView.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            mediaPlaybackRequiresUserGesture = false
-            useWideViewPort = true
-            loadWithOverviewMode = true
-            // Enable multi-window callback so WebChromeClient.onCreateWindow intercepts & blocks ad popups
-            setSupportMultipleWindows(true)
-            javaScriptCanOpenWindowsAutomatically = false
-        }
-
-        browserWebView.addJavascriptInterface(streamSniffer.jsBridge, "StreamSnifferBridge")
-
-        browserWebView.webChromeClient = object : WebChromeClient() {
-            override fun onCreateWindow(
-                view: WebView?,
-                isDialog: Boolean,
-                isUserGesture: Boolean,
-                resultMsg: Message?
-            ): Boolean {
-                val hitResult = view?.hitTestResult
-                val candidatePopupUrl = hitResult?.extra
-                if (adBlockEngine.shouldBlockNavigationOrPopup(
-                        targetUrl = candidatePopupUrl,
-                        currentPageUrl = currentBrowserUrl,
-                        isPopupWindow = true
-                    )
-                ) {
-                    runOnUiThread { updateShieldButton() }
-                    return false
-                }
-                if (!candidatePopupUrl.isNullOrBlank() && isUserGesture) {
-                    view.loadUrl(candidatePopupUrl)
-                }
-                return false
-            }
-
-            override fun onReceivedTitle(view: WebView?, title: String?) {
-                super.onReceivedTitle(view, title)
-                if (!title.isNullOrBlank()) {
-                    streamSniffer.activePageTitle = title
-                }
-            }
-        }
-
-        browserWebView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(
-                view: WebView?,
-                request: WebResourceRequest?
-            ): Boolean {
-                val targetUrl = request?.url?.toString() ?: return false
-                if (!request.isForMainFrame) {
-                    if (adBlockEngine.shouldBlockNavigationOrPopup(targetUrl, currentBrowserUrl, isPopupWindow = false)) {
-                        runOnUiThread { updateShieldButton() }
-                        return true
-                    }
-                    return false
-                }
-
-                // Block non-HTTP scheme hijacks (intent://, market://) and known ad-redirect domains
-                if (adBlockEngine.shouldBlockNavigationOrPopup(targetUrl, currentBrowserUrl, isPopupWindow = false)) {
-                    runOnUiThread { updateShieldButton() }
-                    return true
-                }
-                return false
-            }
-
-            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                if (url != null) {
-                    currentBrowserUrl = url
-                    if (!showingRoom) etUrl.setText(url)
-                    streamSniffer.activePageUrl = url
-
-                    // Reset only the per-page AdBlock counter on new site domain;
-                    // NEVER wipe detectedStreams automatically on play-button redirects/reloads
-                    // (matches Video DownloadHelper behavior — user clears explicitly or via Address Bar Go).
-                    val navDomain = FilterRuleEngine.parseUriSafe(url)?.host?.let { FilterRuleEngine.registrableDomain(it) }.orEmpty()
-                    if (navDomain.isNotEmpty() && navDomain != lastClearedNavHostPath) {
-                        lastClearedNavHostPath = navDomain
-                        adBlockEngine.resetPageCounter()
-                    }
-
-                    updateShieldButton()
-                    injectBrowserShieldAndSniffer(view, url)
-                }
-            }
-
-            override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
-                if (url != null) {
-                    streamSniffer.activePageTitle = view?.title ?: ""
-                    injectBrowserShieldAndSniffer(view, url)
-                    updateShieldButton()
-                }
-            }
-
-            override fun shouldInterceptRequest(
-                view: WebView?,
-                request: WebResourceRequest?
-            ): WebResourceResponse? {
-                if (request != null) {
-                    val pageSnapshot = currentBrowserUrl
-                    val blockedResp = adBlockEngine.interceptRequest(request, pageSnapshot)
-                    if (blockedResp != null) {
-                        runOnUiThread { updateShieldButton() }
-                        return blockedResp
-                    }
-                    streamSniffer.inspectWebRequest(
-                        request = request,
-                        pageUrl = pageSnapshot,
-                        pageTitle = streamSniffer.activePageTitle
-                    )
-                }
-                return super.shouldInterceptRequest(view, request)
-            }
-        }
-    }
-
-    private fun computeTopLevelNavSignature(url: String): String {
-        val uri = FilterRuleEngine.parseUriSafe(url) ?: return ""
-        val host = uri.host?.let { FilterRuleEngine.registrableDomain(it) } ?: return ""
-        val path = uri.path.orEmpty().trimEnd('/')
-        return "$host$path"
-    }
-
-    private fun injectBrowserShieldAndSniffer(view: WebView?, pageUrl: String) {
-        val wv = view ?: return
-        val enabled = adBlockEngine.isShieldEnabledForUrl(pageUrl)
-        val js = BrowserShieldScripts.buildInjectionScript(
-            shieldEnabled = enabled,
-            cosmeticSelectors = adBlockEngine.cosmeticSelectors
-        )
-        wv.evaluateJavascript(js, null)
-    }
-
     private fun updateStreamsButton() {
         btnStreams.text = "Streams (${latestStreams.size})"
     }
@@ -367,11 +257,11 @@ class MainActivity : AppCompatActivity() {
     private fun switchTab(showRoom: Boolean) {
         showingRoom = showRoom
         roomPane.visibility = if (showRoom) View.VISIBLE else View.GONE
-        browserWebView.visibility = if (showRoom) View.GONE else View.VISIBLE
+        browserGeckoView.visibility = if (showRoom) View.GONE else View.VISIBLE
         nativePlayerController.setRoomTabVisibility(showRoom)
         etUrl.setText(
             if (showRoom) (roomWebView.url ?: prefs.getString("server_url", ""))
-            else currentBrowserUrl
+            else geckoBrowser.currentUrl
         )
         updateTabStyles()
         updateShieldButton()
@@ -432,7 +322,7 @@ class MainActivity : AppCompatActivity() {
             currentBrowserUrl = url
             streamSniffer.clearForNewTopLevelPage(url)
             adBlockEngine.resetPageCounter()
-            browserWebView.loadUrl(url)
+            geckoBrowser.loadUrl(url)
         }
     }
 
@@ -453,7 +343,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun extractCurrentBrowserPageInRoom() {
-        val targetUrl = browserWebView.url ?: currentBrowserUrl
+        val targetUrl = geckoBrowser.currentUrl.ifBlank { currentBrowserUrl }
         if (targetUrl.isBlank() || !targetUrl.startsWith("http")) {
             Toast.makeText(this, "Open a video page in Browser first.", Toast.LENGTH_SHORT).show()
             return
@@ -477,7 +367,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun sendStreamSelectionToRoom(videoStream: DetectedStream, audioStream: DetectedStream?) {
-        val pageTitle = (browserWebView.title ?: videoStream.pageTitle ?: "Detected Stream").take(140)
+        val pageTitle = (geckoBrowser.currentTitle.ifBlank { videoStream.pageTitle ?: "Detected Stream" }).take(140)
         val mergedHeaders = LinkedHashMap<String, String>(videoStream.requestHeaders)
         if (audioStream != null) {
             for ((k, v) in audioStream.requestHeaders) {
@@ -495,7 +385,6 @@ class MainActivity : AppCompatActivity() {
 
         switchTab(showRoom = true)
 
-        // 1. Immediately start hardware-synced playback in Native Media3 ExoPlayer with captured headers
         nativePlayerController.loadNativePlayback(
             videoUrl = videoStream.url,
             audioUrl = audioStream?.url,
@@ -507,11 +396,9 @@ class MainActivity : AppCompatActivity() {
             autoPlay = true
         )
 
-        // 2. Broadcast to Watch-Party Room via roomWebView (skipping redundant re-load on local ExoPlayer)
         val headersJson = JSONObject()
         for ((k, v) in mergedHeaders) {
             if (!k.equals("Cookie", ignoreCase = true)) {
-                // Never broadcast user's session cookies to other room peers; pass Referer/Origin/UA hints only
                 headersJson.put(k, v)
             }
         }
@@ -589,7 +476,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 val body = conn.inputStream.bufferedReader().use { it.readText() }
-                val releases = org.json.JSONArray(body)
+                val releases = JSONArray(body)
                 var bestBuild = -1
                 var apkUrl: String? = null
 
@@ -630,7 +517,7 @@ class MainActivity : AppCompatActivity() {
                     } else if (apkUrl != null) {
                         AlertDialog.Builder(this)
                             .setTitle("Update Available")
-                            .setMessage("Installed: v$currentVersion (build $currentBuild)\nNew version: v0.2.$remoteBuild (build $remoteBuild)")
+                            .setMessage("Installed: v$currentVersion (build $currentBuild)\nNew version: v0.3.$remoteBuild (build $remoteBuild)")
                             .setPositiveButton("Download & Install") { _, _ ->
                                 downloadAndInstallApk(apkUrl, remoteBuild)
                             }
@@ -711,6 +598,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        geckoBrowser.close()
         streamSniffer.shutdown()
         nativePlayerController.release()
         networkExecutor.shutdownNow()

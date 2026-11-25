@@ -16,7 +16,11 @@ android {
         minSdk = 24
         targetSdk = 34
         versionCode = buildNumber
-        versionName = "0.2.$buildNumber"
+        versionName = "0.3.$buildNumber"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildFeatures {
@@ -58,11 +62,15 @@ android {
 }
 
 val media3Version = "1.4.1"
+val geckoViewVersion = "133.0.20241209150345"
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
+
+    // Mozilla GeckoView (Firefox Engine for Android — native WebExtensions + filterResponseData)
+    implementation("org.mozilla.geckoview:geckoview:$geckoViewVersion")
 
     // Native Dual-Track & Adaptive Streaming Engine (ExoPlayer + MergingMediaSource)
     implementation("androidx.media3:media3-common:$media3Version")
