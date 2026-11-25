@@ -84,6 +84,9 @@ let pausedByBarrier = false;
 let currentData = null;
 let lastLoadedPlayback = null;
 let lastLoadedTitle = "";
+let lastLoadedSourceUrl = "";
+let lastKnownRoomSync = null;
+let hasAttemptedGuestExtraction = false;
 let pendingMediaBroadcast = null;
 let currentProxyFallbackTried = false;
 
@@ -365,9 +368,14 @@ async function loadUnifiedPlayback(playback, title = null, broadcast = false, op
   const autoPlay = Boolean(options.autoPlay);
   const alreadyLoadedNative = Boolean(options.alreadyLoadedNative);
   const forceProxy = Boolean(options.forceProxy);
+  const sourceUrl = options.sourceUrl || (currentData ? currentData.source_url : "") || lastLoadedSourceUrl || "";
 
   lastLoadedPlayback = playback;
   lastLoadedTitle = title || mediaTitle.textContent || "Untitled Stream";
+  if (sourceUrl) lastLoadedSourceUrl = sourceUrl;
+  if (!options.isGuestReExtracted) {
+    hasAttemptedGuestExtraction = false;
+  }
   if (!forceProxy) {
     currentProxyFallbackTried = false;
   }
@@ -379,7 +387,7 @@ async function loadUnifiedPlayback(playback, title = null, broadcast = false, op
       auto_play: autoPlay,
       media: {
         title: title || mediaTitle.textContent || "Untitled Stream",
-        source_url: currentData ? currentData.source_url : "",
+        source_url: sourceUrl,
         playback,
       },
     };
@@ -459,7 +467,12 @@ async function loadUnifiedPlayback(playback, title = null, broadcast = false, op
     : null;
 
   const triggerProxyFallback = (errReason = "") => {
-    if (hasNativeAndroidPlayer || hasDesktopProxy) return;
+    // On Electron Desktop Guest: if direct URL fails (IP-locked token), auto-extract fresh token from source_url locally!
+    if (hasDesktopProxy) {
+      tryGuestLocalExtraction(errReason);
+      return;
+    }
+    if (hasNativeAndroidPlayer) return;
     if (currentProxyFallbackTried) {
       roomSyncLog.textContent = `Stream blocked by CDN (${errReason || "403 / IP-locked token"}). Join using StreamSync Desktop (.exe) or Android App.`;
       roomSyncLog.classList.remove("hidden");
@@ -642,12 +655,100 @@ if (!hasNativeAndroidPlayer) {
   });
 }
 
+function tryGuestLocalExtraction(reason = "") {
+  if (hasAttemptedGuestExtraction || !lastLoadedSourceUrl) return false;
+  if (!lastLoadedSourceUrl.startsWith("http://") && !lastLoadedSourceUrl.startsWith("https://")) return false;
+  hasAttemptedGuestExtraction = true;
+
+  const wantPaired = Boolean(lastLoadedPlayback && lastLoadedPlayback.mode === "paired");
+  roomSyncLog.textContent = `Refreshing stream for your IP (${reason || "CDN token"})...`;
+  roomSyncLog.classList.remove("hidden");
+  updateStatusStripVisibility();
+
+  if (hasNativeAndroidPlayer && typeof window.AndroidNativePlayer.extractFromPageUrl === "function") {
+    window.AndroidNativePlayer.extractFromPageUrl(lastLoadedSourceUrl, wantPaired);
+    return true;
+  }
+  if (hasDesktopProxy && typeof window.StreamSyncDesktop.extractFromSourceUrl === "function") {
+    window.StreamSyncDesktop.extractFromSourceUrl(lastLoadedSourceUrl, wantPaired)
+      .then((freshPlayback) => {
+        if (freshPlayback && freshPlayback.video_url) {
+          loadUnifiedPlayback(freshPlayback, lastLoadedTitle, false, {
+            autoPlay: lastKnownRoomSync ? Boolean(lastKnownRoomSync.is_playing) : true,
+            sourceUrl: lastLoadedSourceUrl,
+            isGuestReExtracted: true,
+          }).then(() => {
+            if (lastKnownRoomSync) {
+              setTimeout(() => {
+                applyRemoteSync(
+                  lastKnownRoomSync.is_playing,
+                  lastKnownRoomSync.position,
+                  lastKnownRoomSync.playback_rate,
+                  {
+                    serverTs: lastKnownRoomSync.server_ts,
+                    logText: "Stream refreshed & synced with room",
+                  }
+                );
+              }, 350);
+            }
+          });
+        } else {
+          roomSyncLog.textContent = "Could not extract stream locally — open Browser tab and select stream manually.";
+          roomSyncLog.classList.remove("hidden");
+          updateStatusStripVisibility();
+        }
+      })
+      .catch(() => {});
+    return true;
+  }
+  return false;
+}
+
+window.onGuestNativeReExtracted = (payload) => {
+  if (!payload || !payload.video_url) return;
+  const media = buildExtensionPlayback(
+    payload.video_url,
+    payload.audio_url || "",
+    lastLoadedTitle || payload.title || "Synced Stream",
+    {
+      is_hls: payload.is_hls,
+      is_dash: payload.is_dash,
+      label: payload.label,
+      headers: payload.headers,
+    }
+  );
+  loadUnifiedPlayback(media.playback, media.title, false, {
+    autoPlay: lastKnownRoomSync ? Boolean(lastKnownRoomSync.is_playing) : true,
+    alreadyLoadedNative: Boolean(payload.already_loaded_native),
+    sourceUrl: lastLoadedSourceUrl,
+    isGuestReExtracted: true,
+  });
+  if (lastKnownRoomSync) {
+    setTimeout(() => {
+      applyRemoteSync(
+        lastKnownRoomSync.is_playing,
+        lastKnownRoomSync.position,
+        lastKnownRoomSync.playback_rate,
+        {
+          serverTs: lastKnownRoomSync.server_ts,
+          logText: "Stream refreshed for your IP & synced",
+        }
+      );
+    }, 300);
+  }
+};
+
 // ---------- Native Android ExoPlayer Event Callback ----------
 
 window.onNativePlayerEvent = (payload) => {
   if (!payload || !payload.event) return;
   window.__nativePlayerState = payload;
 
+  if (payload.event === "playback_error") {
+    reportBufferStateToRoom(false);
+    tryGuestLocalExtraction("ExoPlayer 403/IP token");
+    return;
+  }
   if (payload.event === "buffering_start") {
     reportBufferStateToRoom(true);
     return;
@@ -712,6 +813,12 @@ function applyRemoteSync(isPlaying, rawPosition, playbackRate, options = {}) {
   if (typeof syncSeq === "number") {
     lastAppliedSyncSeq = syncSeq;
   }
+  lastKnownRoomSync = {
+    is_playing: Boolean(isPlaying),
+    position: Number(rawPosition || 0),
+    playback_rate: Number(playbackRate || 1.0),
+    server_ts: serverTs || Date.now() / 1000,
+  };
 
   pausedByBarrier = false;
   bufferBarrierBanner.classList.add("hidden");
@@ -1012,7 +1119,9 @@ function connectToRoom(roomId) {
         pendingMediaBroadcast = null;
         socket.send(JSON.stringify(queued));
       } else if (msg.media && msg.media.playback) {
-        loadUnifiedPlayback(msg.media.playback, msg.media.title, false);
+        loadUnifiedPlayback(msg.media.playback, msg.media.title, false, {
+          sourceUrl: msg.media.source_url || "",
+        });
         setTimeout(() => {
           if (msg.buffering_active) {
             handleBufferBarrier({
@@ -1074,6 +1183,7 @@ function connectToRoom(roomId) {
         if (!loadedByMeOnNative) {
           loadUnifiedPlayback(msg.media.playback, msg.media.title, false, {
             autoPlay: Boolean(msg.is_playing),
+            sourceUrl: msg.media.source_url || "",
           });
           setTimeout(() => {
             applyRemoteSync(msg.is_playing, msg.position, msg.playback_rate, {
@@ -1245,6 +1355,7 @@ window.loadFromNativePayload = (payload) => {
   loadUnifiedPlayback(media.playback, media.title, true, {
     autoPlay: true,
     alreadyLoadedNative: Boolean(payload.already_loaded_native),
+    sourceUrl: payload.source_url || "",
   });
 };
 

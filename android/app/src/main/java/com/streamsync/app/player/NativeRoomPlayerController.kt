@@ -42,7 +42,8 @@ class NativeRoomPlayerController(
     private val tvPlayerBadge: TextView,
     private val roomWebView: WebView,
     private val defaultUserAgent: String,
-    private val onFullscreenToggle: (Boolean) -> Unit
+    private val onFullscreenToggle: (Boolean) -> Unit,
+    private val onExtractSourceUrlRequested: (sourceUrl: String, wantPaired: Boolean) -> Unit = { _, _ -> }
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
     val exoPlayer: ExoPlayer = ExoPlayer.Builder(context).build()
@@ -107,6 +108,7 @@ class NativeRoomPlayerController(
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 emitEventToWeb("buffering_end")
+                emitEventToWeb("playback_error")
             }
 
             override fun onPositionDiscontinuity(
@@ -426,6 +428,15 @@ class NativeRoomPlayerController(
                 hasActiveMedia = false
                 exoPlayer.stop()
                 updateContainerVisibility()
+            }
+        }
+
+        @JavascriptInterface
+        fun extractFromPageUrl(sourceUrl: String?, wantPaired: Boolean) {
+            val clean = sourceUrl?.trim() ?: return
+            if (!clean.startsWith("http://") && !clean.startsWith("https://")) return
+            mainHandler.post {
+                onExtractSourceUrlRequested(clean, wantPaired)
             }
         }
     }

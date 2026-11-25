@@ -136,7 +136,10 @@ class MainActivity : AppCompatActivity() {
             tvPlayerBadge = tvNativePlayerBadge,
             roomWebView = roomWebView,
             defaultUserAgent = defaultUa,
-            onFullscreenToggle = { fullscreen -> applyFullscreenMode(fullscreen) }
+            onFullscreenToggle = { fullscreen -> applyFullscreenMode(fullscreen) },
+            onExtractSourceUrlRequested = { srcUrl, wantPaired ->
+                extractStreamSilentlyForGuest(srcUrl, wantPaired)
+            }
         )
 
         // Initialize Mozilla GeckoView (Firefox Engine) + Built-In WebExtension Sniffer & Shield
@@ -411,6 +414,7 @@ class MainActivity : AppCompatActivity() {
             put("title", pageTitle)
             put("label", combinedLabel)
             put("headers", headersJson)
+            put("source_url", geckoBrowser.currentUrl.ifBlank { currentBrowserUrl })
             put("already_loaded_native", true)
         }
 
@@ -453,6 +457,80 @@ class MainActivity : AppCompatActivity() {
             if (audioStream != null) "Paired Video + Audio loaded in ExoPlayer & Room" else "Stream loaded in ExoPlayer & Room",
             Toast.LENGTH_SHORT
         ).show()
+    }
+
+    private fun extractStreamSilentlyForGuest(sourceUrl: String, wantPaired: Boolean) {
+        currentBrowserUrl = sourceUrl
+        streamSniffer.clearForNewTopLevelPage(sourceUrl)
+        adBlockEngine.resetPageCounter()
+        geckoBrowser.loadUrl(sourceUrl)
+
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        val startMs = System.currentTimeMillis()
+        val poller = object : Runnable {
+            override fun run() {
+                val list = latestStreams.filter { !it.isDrmProtected }
+                val combined = list.filter { it.kind == com.streamsync.app.extractor.StreamKind.COMBINED }
+                val videoOnly = list.filter { it.kind == com.streamsync.app.extractor.StreamKind.VIDEO_ONLY }
+                val audioOnly = list.filter { it.kind == com.streamsync.app.extractor.StreamKind.AUDIO_ONLY }
+
+                var chosenVideo: DetectedStream? = null
+                var chosenAudio: DetectedStream? = null
+
+                if (wantPaired && videoOnly.isNotEmpty() && audioOnly.isNotEmpty()) {
+                    chosenVideo = videoOnly.first()
+                    chosenAudio = audioOnly.first()
+                } else if (combined.isNotEmpty()) {
+                    chosenVideo = combined.first()
+                } else if (videoOnly.isNotEmpty() && audioOnly.isNotEmpty()) {
+                    chosenVideo = videoOnly.first()
+                    chosenAudio = audioOnly.first()
+                }
+
+                if (chosenVideo != null) {
+                    val mergedHeaders = LinkedHashMap<String, String>(chosenVideo.requestHeaders)
+                    if (chosenAudio != null) {
+                        for ((k, v) in chosenAudio.requestHeaders) {
+                            if (v.isNotBlank() && !mergedHeaders.containsKey(k)) mergedHeaders[k] = v
+                        }
+                    }
+                    val label = if (chosenAudio != null) {
+                        "Refreshed Video + Audio (Synced)"
+                    } else {
+                        chosenVideo.label
+                    }
+                    nativePlayerController.loadNativePlayback(
+                        videoUrl = chosenVideo.url,
+                        audioUrl = chosenAudio?.url,
+                        isHls = chosenVideo.isHls,
+                        isDash = chosenVideo.isDash,
+                        title = geckoBrowser.currentTitle.ifBlank { "Synced Stream" },
+                        label = label,
+                        headers = mergedHeaders,
+                        autoPlay = true
+                    )
+                    val payload = JSONObject().apply {
+                        put("video_url", chosenVideo.url)
+                        put("audio_url", chosenAudio?.url ?: "")
+                        put("is_hls", chosenVideo.isHls)
+                        put("is_dash", chosenVideo.isDash)
+                        put("label", label)
+                        put("already_loaded_native", true)
+                    }
+                    val quoted = JSONObject.quote(payload.toString())
+                    roomWebView.evaluateJavascript(
+                        "if (window.onGuestNativeReExtracted) { window.onGuestNativeReExtracted(JSON.parse($quoted)); }",
+                        null
+                    )
+                    return
+                }
+
+                if (System.currentTimeMillis() - startMs < 15_000L) {
+                    handler.postDelayed(this, 500L)
+                }
+            }
+        }
+        handler.postDelayed(poller, 1200L)
     }
 
     private fun checkForUpdates() {

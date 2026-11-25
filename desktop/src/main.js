@@ -571,6 +571,78 @@ ipcMain.handle("room:register-headers", (_e, payload) => {
   }
 });
 
+ipcMain.handle("room:extract-source-url", async (_e, { sourceUrl, wantPaired }) => {
+  if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl) || !streamSniffer || !browserView) return null;
+
+  // Load sourceUrl silently in background browserView (staying on Room tab!) to get a fresh IP-bound token
+  currentBrowserUrl = sourceUrl;
+  streamSniffer.clearForNewPage(sourceUrl);
+  browserView.webContents.loadURL(sourceUrl).catch(() => {});
+
+  // Try clicking any visible <video> / play button once loaded to trigger player stream requests
+  setTimeout(() => {
+    if (browserView && !browserView.webContents.isDestroyed()) {
+      browserView.webContents
+        .executeJavaScript(
+          `(function(){try{var v=document.querySelector('video');if(v&&v.paused)v.play().catch(function(){});var btn=document.querySelector('.vjs-big-play-button,.plyr__control--overlaid,.jw-icon-display,[aria-label*="Play" i]');if(btn)btn.click();}catch(_){}})();`
+        )
+        .catch(() => {});
+    }
+  }, 2200);
+
+  return await new Promise((resolve) => {
+    const start = Date.now();
+    const timer = setInterval(() => {
+      const list = streamSniffer.getSortedStreams().filter((s) => !s.isDrmProtected);
+      const combined = list.filter((s) => s.kind === "COMBINED");
+      const videoOnly = list.filter((s) => s.kind === "VIDEO_ONLY");
+      const audioOnly = list.filter((s) => s.kind === "AUDIO_ONLY");
+
+      let chosenVideo = null;
+      let chosenAudio = null;
+
+      if (wantPaired && videoOnly.length > 0 && audioOnly.length > 0) {
+        chosenVideo = videoOnly[0];
+        chosenAudio = audioOnly[0];
+      } else if (combined.length > 0) {
+        chosenVideo = combined[0];
+      } else if (videoOnly.length > 0 && audioOnly.length > 0) {
+        chosenVideo = videoOnly[0];
+        chosenAudio = audioOnly[0];
+      }
+
+      if (chosenVideo) {
+        clearInterval(timer);
+        const mergedHeaders = { ...(chosenVideo.requestHeaders || {}) };
+        if (chosenAudio && chosenAudio.requestHeaders) {
+          for (const [k, v] of Object.entries(chosenAudio.requestHeaders)) {
+            if (v && !mergedHeaders[k]) mergedHeaders[k] = v;
+          }
+        }
+        registerRoomStreamHeaders(
+          [chosenVideo.url, chosenAudio ? chosenAudio.url : null].filter(Boolean),
+          mergedHeaders
+        );
+        resolve({
+          mode: chosenAudio ? "paired" : "single",
+          video_url: chosenVideo.url,
+          audio_url: chosenAudio ? chosenAudio.url : null,
+          is_hls: Boolean(chosenVideo.isHls),
+          is_dash: Boolean(chosenVideo.isDash),
+          label: chosenAudio ? "Refreshed Video + Audio (Synced)" : chosenVideo.label,
+          headers: mergedHeaders,
+        });
+        return;
+      }
+
+      if (Date.now() - start > 15000) {
+        clearInterval(timer);
+        resolve(null);
+      }
+    }, 500);
+  });
+});
+
 ipcMain.handle("streams:play-in-room", async (_e, { videoStream, audioStream }) => {
   if (!videoStream || !videoStream.url) return;
 
@@ -606,6 +678,7 @@ ipcMain.handle("streams:play-in-room", async (_e, { videoStream, audioStream }) 
     title: pageTitle,
     label,
     headers: publicHeaders,
+    source_url: currentBrowserUrl,
   };
 
   activeTab = "room";
