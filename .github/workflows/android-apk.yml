@@ -28,10 +28,21 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      - name: Decode Persistent Signing Keystore (if configured)
+        if: ${{ secrets.ANDROID_KEYSTORE_B64 != '' }}
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          echo "$ANDROID_KEYSTORE_B64" | base64 -d > "${{ runner.temp }}/streamsync.jks"
+          echo "STREAMSYNC_KEYSTORE_PATH=${{ runner.temp }}/streamsync.jks" >> $GITHUB_ENV
+
       - name: Build Debug APK
         working-directory: android
         env:
           STREAMSYNC_BUILD_NUMBER: ${{ github.run_number }}
+          STREAMSYNC_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS || 'streamsync' }}
+          STREAMSYNC_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'streamsync' }}
+          STREAMSYNC_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS || 'streamsync' }}
         run: gradle assembleDebug
 
       - name: Upload APK Artifact

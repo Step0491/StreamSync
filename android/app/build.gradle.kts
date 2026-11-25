@@ -24,6 +24,20 @@ android {
     }
 
     buildTypes {
+        val ksPath = System.getenv("STREAMSYNC_KEYSTORE_PATH")
+        if (!ksPath.isNullOrBlank() && file(ksPath).exists()) {
+            signingConfigs {
+                create("ciRelease") {
+                    storeFile = file(ksPath)
+                    storePassword = System.getenv("STREAMSYNC_KEYSTORE_PASS") ?: "streamsync"
+                    keyAlias = System.getenv("STREAMSYNC_KEY_ALIAS") ?: "streamsync"
+                    keyPassword = System.getenv("STREAMSYNC_KEY_PASS") ?: "streamsync"
+                }
+            }
+            getByName("debug") {
+                signingConfig = signingConfigs.getByName("ciRelease")
+            }
+        }
         release {
             isMinifyEnabled = false
         }
