@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StreamSync Detector</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="header">
+    <strong>StreamSync Detector</strong>
+    <button id="clear-btn" type="button" class="btn-ghost">Clear</button>
+  </header>
+
+  <section class="config">
+    <label>
+      StreamSync Server URL
+      <input id="server-url" type="url" placeholder="http://localhost:8000" />
+    </label>
+    <label>
+      Room Code (optional)
+      <input id="room-code" type="text" placeholder="e.g. A1B2C3" maxlength="8" />
+    </label>
+  </section>
+
+  <section id="pair-box" class="section hidden">
+    <div class="section-title">Pair Separated Video + Audio</div>
+    <select id="video-select"></select>
+    <select id="audio-select"></select>
+    <button id="send-paired-btn" type="button" class="btn-primary">Open Paired in StreamSync</button>
+  </section>
+
+  <section class="section">
+    <div class="section-title">Detected Streams (<span id="count">0</span>)</div>
+    <div id="stream-list" class="list"></div>
+  </section>
+
+  <script src="popup.js"></script>
+</body>
+</html>

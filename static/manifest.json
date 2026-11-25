@@ -1,0 +1,10 @@
+{
+  "name": "StreamSync",
+  "short_name": "StreamSync",
+  "description": "Extract public video/audio streams and watch together.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b0f17",
+  "theme_color": "#6366f1",
+  "icons": []
+}

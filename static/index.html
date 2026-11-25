@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#6366f1" />
+  <title>StreamSync — Unified Extractor &amp; Watch Rooms</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/dashjs@4.7.4/dist/dash.all.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo-dot"></span>
+      <span>StreamSync</span>
+      <span id="room-status-badge" class="badge badge-muted">Solo Mode</span>
+    </div>
+    <div class="room-bar">
+      <input id="nickname-input" type="text" placeholder="Your name" maxlength="24" class="input-sm" />
+      <input id="room-code-input" type="text" placeholder="Room code" maxlength="8" class="input-sm code-input" />
+      <button id="join-room-btn" type="button" class="btn-sm btn-secondary">Join</button>
+      <button id="create-room-btn" type="button" class="btn-sm">Create Room</button>
+      <button id="invite-room-btn" type="button" class="btn-sm btn-secondary hidden">Copy Invite</button>
+      <button id="leave-room-btn" type="button" class="btn-sm btn-danger hidden">Leave</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <div class="main-col">
+      <section class="card">
+        <h1>Load Public Stream</h1>
+        <p class="subtitle">
+          Paste a public, non-DRM streaming page or direct media URL (<code>.mp4</code>, <code>.m3u8</code>, <code>.mpd</code>).
+          Separated video &amp; audio tracks are automatically unified into one seamless stream.
+        </p>
+
+        <form id="extract-form" class="url-form">
+          <input
+            id="url-input"
+            type="url"
+            placeholder="https://example.com/watch?v=... or https://.../stream.m3u8"
+            required
+            autocomplete="off"
+          />
+          <button id="extract-btn" type="submit">Load Stream</button>
+        </form>
+
+        <div id="status-box" class="status hidden" role="status"></div>
+      </section>
+
+      <section id="player-section" class="card player-card hidden">
+        <div class="player-bar">
+          <div>
+            <h2 id="media-title" class="player-title">Untitled</h2>
+            <span id="now-playing" class="now-playing">Ready</span>
+          </div>
+          <div class="meta-pills">
+            <span id="media-extractor" class="pill hidden"></span>
+            <span id="media-duration" class="pill hidden"></span>
+            <span id="media-live" class="pill pill-live hidden">LIVE</span>
+            <span id="sync-indicator" class="pill pill-accent hidden">Unified Video + Audio</span>
+          </div>
+        </div>
+
+        <video id="video-player" controls playsinline></video>
+        <audio id="audio-player" preload="auto"></audio>
+
+        <div id="manifest-audio-bar" class="pair-selects hidden">
+          <label>
+            Stream Audio Track (HLS / DASH)
+            <select id="manifest-audio-select"></select>
+          </label>
+        </div>
+
+        <div id="room-sync-log" class="sync-log hidden"></div>
+      </section>
+
+      <section id="tracks-section" class="card hidden">
+        <details id="tracks-details" open>
+          <summary class="details-summary">Select Complete Stream or Separated Video + Audio Tracks</summary>
+
+          <div id="pair-controls" class="pair-controls hidden">
+            <div class="pair-selects">
+              <label>
+                Video Track
+                <select id="pair-video-select"></select>
+              </label>
+              <label>
+                Audio Track
+                <select id="pair-audio-select"></select>
+              </label>
+            </div>
+            <button id="pair-play-btn" type="button" class="btn-secondary">Switch to Selected Video + Audio Pair</button>
+          </div>
+
+          <div class="tabs" role="tablist">
+            <button class="tab active" data-tab="combined" type="button">Combined (<span id="count-combined">0</span>)</button>
+            <button class="tab" data-tab="video" type="button">Video Only (<span id="count-video">0</span>)</button>
+            <button class="tab" data-tab="audio" type="button">Audio Only (<span id="count-audio">0</span>)</button>
+            <button class="tab" data-tab="subs" type="button">Subtitles (<span id="count-subs">0</span>)</button>
+          </div>
+
+          <div id="tab-combined" class="tab-panel"></div>
+          <div id="tab-video" class="tab-panel hidden"></div>
+          <div id="tab-audio" class="tab-panel hidden"></div>
+          <div id="tab-subs" class="tab-panel hidden"></div>
+        </details>
+      </section>
+    </div>
+
+    <aside id="room-sidebar" class="card sidebar hidden">
+      <div class="sidebar-header">
+        <h2>Room <span id="sidebar-room-code"></span></h2>
+        <span id="member-count" class="pill">0 online</span>
+      </div>
+
+      <div id="member-list" class="member-list"></div>
+
+      <div id="chat-messages" class="chat-messages"></div>
+
+      <form id="chat-form" class="chat-form">
+        <input id="chat-input" type="text" placeholder="Message room..." maxlength="500" autocomplete="off" />
+        <button type="submit" class="btn-sm">Send</button>
+      </form>
+    </aside>
+  </main>
+</body>
+</html>

@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "StreamSync Media Detector",
+  "version": "0.1.0",
+  "description": "Detects non-DRM video, audio, HLS (.m3u8) and DASH (.mpd) streams on the current tab and sends them to StreamSync.",
+  "permissions": [
+    "webRequest",
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
+  },
+  "action": {
+    "default_title": "StreamSync Media Detector",
+    "default_popup": "popup.html"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "streamsync-detector@local.dev",
+      "strict_min_version": "121.0"
+    },
+    "gecko_android": {
+      "strict_min_version": "121.0"
+    }
+  }
+}
