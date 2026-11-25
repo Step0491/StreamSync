@@ -417,13 +417,15 @@ class MainActivity : AppCompatActivity() {
         val jsVideo = JSONObject.quote(videoStream.url)
         val jsAudio = JSONObject.quote(audioStream?.url ?: "")
         val jsTitle = JSONObject.quote(pageTitle)
-        val jsPayloadArg = jsPayload.toString()
+        val jsPayloadQuoted = JSONObject.quote(jsPayload.toString())
 
+        roomWebView.onResume()
         roomWebView.evaluateJavascript(
             """
             (function() {
+              var p = JSON.parse($jsPayloadQuoted);
               if (window.loadFromNativePayload) {
-                window.loadFromNativePayload($jsPayloadArg);
+                window.loadFromNativePayload(p);
                 return true;
               }
               if (window.loadFromNativeApp) {

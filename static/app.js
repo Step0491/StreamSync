@@ -78,10 +78,14 @@ let pausedByBarrier = false;
 let currentData = null;
 let lastLoadedPlayback = null;
 let lastLoadedTitle = "";
+let pendingMediaBroadcast = null;
 
 // Room WebSocket & Clock Sync state
 let ws = null;
 let currentRoomId = null;
+let intendedRoomId = null;
+let reconnectTimer = null;
+let reconnectAttempts = 0;
 let myClientId = null;
 let roomHostId = null;
 let roomControlMode = "everyone";
@@ -372,18 +376,26 @@ function loadUnifiedPlayback(playback, title = null, broadcast = false, options 
     }
   }
 
-  if (broadcast && ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(
-      JSON.stringify({
-        type: "load_media",
-        auto_play: autoPlay,
-        media: {
-          title: title || mediaTitle.textContent || "Untitled Stream",
-          source_url: currentData ? currentData.source_url : "",
-          playback,
-        },
-      })
-    );
+  if (broadcast) {
+    const mediaMsg = {
+      type: "load_media",
+      auto_play: autoPlay,
+      media: {
+        title: title || mediaTitle.textContent || "Untitled Stream",
+        source_url: currentData ? currentData.source_url : "",
+        playback,
+      },
+    };
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      pendingMediaBroadcast = null;
+      ws.send(JSON.stringify(mediaMsg));
+    } else if (intendedRoomId || currentRoomId) {
+      // Queue media broadcast so it flushes the instant the WebSocket (re)connects!
+      pendingMediaBroadcast = mediaMsg;
+      if ((!ws || ws.readyState === WebSocket.CLOSED) && (intendedRoomId || currentRoomId)) {
+        connectToRoom(intendedRoomId || currentRoomId);
+      }
+    }
   }
 }
 
@@ -796,20 +808,34 @@ function setRoomUI(roomId) {
 function connectToRoom(roomId) {
   const code = roomId.trim().toUpperCase();
   if (!code) return;
-  if (ws) ws.close();
+  intendedRoomId = code;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    try {
+      ws.onclose = null;
+      ws.close();
+    } catch (_) {}
+  }
 
   const nick = encodeURIComponent(nicknameInput.value.trim() || "Guest");
   const proto = window.location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${window.location.host}/ws/rooms/${code}?nickname=${nick}`);
+  const socket = new WebSocket(`${proto}://${window.location.host}/ws/rooms/${code}?nickname=${nick}`);
+  ws = socket;
 
-  ws.onopen = () => {
+  socket.onopen = () => {
+    if (ws !== socket) return;
+    reconnectAttempts = 0;
     setRoomUI(code);
     chatMessages.innerHTML = "";
     appendChat("", `Connected to room ${code}.`, true);
     startRoomTimers();
   };
 
-  ws.onmessage = (event) => {
+  socket.onmessage = (event) => {
+    if (ws !== socket) return;
     const msg = JSON.parse(event.data);
 
     if (msg.type === "pong") {
@@ -840,7 +866,11 @@ function connectToRoom(roomId) {
       renderMembers(msg.members || []);
       (msg.chat_history || []).forEach((c) => appendChat(c.nickname, c.text));
 
-      if (msg.media && msg.media.playback) {
+      if (pendingMediaBroadcast) {
+        const queued = pendingMediaBroadcast;
+        pendingMediaBroadcast = null;
+        socket.send(JSON.stringify(queued));
+      } else if (msg.media && msg.media.playback) {
         loadUnifiedPlayback(msg.media.playback, msg.media.title, false);
         setTimeout(() => {
           if (msg.buffering_active) {
@@ -860,9 +890,9 @@ function connectToRoom(roomId) {
           }
         }, 300);
       } else if (myClientId && myClientId === roomHostId && lastLoadedPlayback) {
-        // Host already loaded a stream before creating the room -> broadcast it immediately!
+        // Host already loaded a stream before creating/reconnecting to the room -> broadcast it immediately!
         const st = getActivePlaybackState();
-        ws.send(
+        socket.send(
           JSON.stringify({
             type: "load_media",
             auto_play: st.isPlaying,
@@ -956,13 +986,33 @@ function connectToRoom(roomId) {
     }
   };
 
-  ws.onclose = () => {
-    if (currentRoomId === code) {
+  socket.onclose = () => {
+    if (ws !== socket) return;
+    stopRoomTimers();
+    if (intendedRoomId === code) {
+      const delayMs = Math.min(8000, 1000 * Math.pow(2, reconnectAttempts));
+      reconnectAttempts += 1;
+      appendChat("", `Connection lost — reconnecting to ${code}...`, true);
+      reconnectTimer = setTimeout(() => {
+        if (intendedRoomId === code) connectToRoom(code);
+      }, delayMs);
+    } else if (currentRoomId === code) {
       setRoomUI(null);
       roomSyncLog.classList.add("hidden");
     }
   };
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (
+    document.visibilityState === "visible" &&
+    intendedRoomId &&
+    (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING)
+  ) {
+    reconnectAttempts = 0;
+    connectToRoom(intendedRoomId);
+  }
+});
 
 createRoomBtn.addEventListener("click", async () => {
   try {
@@ -981,7 +1031,16 @@ joinRoomBtn.addEventListener("click", () => {
 });
 
 leaveRoomBtn.addEventListener("click", () => {
-  if (ws) ws.close();
+  intendedRoomId = null;
+  pendingMediaBroadcast = null;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (ws) {
+    ws.onclose = null;
+    ws.close();
+  }
   ws = null;
   setRoomUI(null);
 });
