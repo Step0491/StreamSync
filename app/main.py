@@ -220,6 +220,19 @@ async def get_room(room_id: str) -> dict:
     return summary
 
 
+@app.post("/api/rooms/{room_id}/media")
+async def post_room_media(room_id: str, payload: dict) -> dict:
+    media = payload.get("media") if isinstance(payload, dict) else None
+    if not isinstance(media, dict) or not isinstance(media.get("playback"), dict):
+        raise HTTPException(status_code=400, detail="Invalid media payload.")
+    return await room_manager.set_media_http(
+        room_id=room_id,
+        media=media,
+        auto_play=bool(payload.get("auto_play", True)),
+        sender_name=str(payload.get("by") or "Host"),
+    )
+
+
 @app.websocket("/ws/rooms/{room_id}")
 async def room_websocket(
     websocket: WebSocket,

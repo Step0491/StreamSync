@@ -135,6 +135,62 @@ class RoomManager:
             "control_mode": room.control_mode,
         }
 
+    async def set_media_http(self, room_id: str, media: dict[str, Any], auto_play: bool = True, sender_name: str = "Host") -> dict[str, Any]:
+        code = room_id.strip().upper()
+        room = self.rooms.get(code)
+        if room is None:
+            room = RoomState(room_id=code)
+            self.rooms[code] = room
+
+        raw_pb = media.get("playback") if isinstance(media.get("playback"), dict) else {}
+        sanitized_headers: dict[str, str] = {}
+        if isinstance(raw_pb.get("headers"), dict):
+            for hk, hv in raw_pb["headers"].items():
+                if isinstance(hk, str) and isinstance(hv, str):
+                    if hk.lower() in ("referer", "origin", "user-agent") and hv.strip():
+                        sanitized_headers[hk] = hv.strip()[:512]
+
+        playback_clean: dict[str, Any] = {
+            "mode": "paired" if raw_pb.get("mode") == "paired" and raw_pb.get("audio_url") else "single",
+            "video_url": str(raw_pb.get("video_url") or ""),
+            "audio_url": str(raw_pb.get("audio_url") or "") or None,
+            "is_hls": bool(raw_pb.get("is_hls", False)),
+            "is_dash": bool(raw_pb.get("is_dash", False)),
+            "label": str(raw_pb.get("label") or "")[:120],
+        }
+        if sanitized_headers:
+            playback_clean["headers"] = sanitized_headers
+
+        now = time.time()
+        room.media = {
+            "title": str(media.get("title") or "Untitled Stream")[:160],
+            "source_url": str(media.get("source_url") or ""),
+            "playback": playback_clean,
+        }
+        room.buffering_members.clear()
+        room.is_playing = auto_play
+        room.desired_playing = auto_play
+        room.position = 0.0
+        room.playback_rate = 1.0
+        room.updated_at = now
+        room.sync_seq += 1
+
+        await self.broadcast(
+            room,
+            {
+                "type": "media_changed",
+                "media": room.media,
+                "is_playing": room.is_playing,
+                "position": room.position,
+                "playback_rate": room.playback_rate,
+                "sync_seq": room.sync_seq,
+                "by": sender_name[:24],
+                "sender_id": "http",
+                "server_ts": room.updated_at,
+            },
+        )
+        return {"ok": True, "room_id": room.room_id, "sync_seq": room.sync_seq}
+
     async def _send_safe(self, ws: WebSocket, payload: dict[str, Any]) -> None:
         try:
             await ws.send_json(payload)

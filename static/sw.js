@@ -1,15 +1,10 @@
-const CACHE_NAME = "streamsync-v2";
-const ASSETS = ["/", "/static/styles.css", "/static/app.js", "/manifest.json"];
-
-self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)));
+// Network-only service worker that clears legacy caches so room clients never run stale app.js
+self.addEventListener("install", () => {
+  self.skipWaiting();
 });
 
-self.addEventListener("fetch", (event) => {
-  if (event.request.method !== "GET" || event.request.url.includes("/api/")) {
-    return;
-  }
-  event.respondWith(
-    fetch(event.request).catch(() => caches.match(event.request))
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k)))).then(() => self.clients.claim())
   );
 });

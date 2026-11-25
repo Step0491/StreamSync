@@ -188,6 +188,82 @@ function computeNavSignature(url) {
   }
 }
 
+function installWebRequestMultiplexer(targetSession) {
+  const wr = targetSession.webRequest;
+  const origBeforeReq = wr.onBeforeRequest.bind(wr);
+  const origBeforeSend = wr.onBeforeSendHeaders.bind(wr);
+  const origHeadersRecv = wr.onHeadersReceived.bind(wr);
+
+  const beforeReqHandlers = [];
+  const beforeSendHandlers = [];
+  const headersRecvHandlers = [];
+
+  wr.onBeforeRequest = (filterOrListener, maybeListener) => {
+    const fn = typeof filterOrListener === "function" ? filterOrListener : maybeListener;
+    if (typeof fn === "function") beforeReqHandlers.push(fn);
+    origBeforeReq({ urls: ["<all_urls>"] }, (details, cb) => {
+      let idx = 0;
+      const next = (res) => {
+        if (res && (res.cancel || res.redirectURL)) return cb(res);
+        if (idx >= beforeReqHandlers.length) return cb({});
+        const h = beforeReqHandlers[idx++];
+        try {
+          h(details, next);
+        } catch {
+          next({});
+        }
+      };
+      next({});
+    });
+  };
+
+  wr.onBeforeSendHeaders = (filterOrListener, maybeListener) => {
+    const fn = typeof filterOrListener === "function" ? filterOrListener : maybeListener;
+    if (typeof fn === "function") beforeSendHandlers.push(fn);
+    origBeforeSend({ urls: ["<all_urls>"] }, (details, cb) => {
+      let currentHeaders = details.requestHeaders;
+      let idx = 0;
+      const next = (res) => {
+        if (res && res.cancel) return cb(res);
+        if (res && res.requestHeaders) currentHeaders = res.requestHeaders;
+        if (idx >= beforeSendHandlers.length) {
+          return cb(currentHeaders !== details.requestHeaders ? { requestHeaders: currentHeaders } : {});
+        }
+        const h = beforeSendHandlers[idx++];
+        try {
+          h({ ...details, requestHeaders: currentHeaders }, next);
+        } catch {
+          next({});
+        }
+      };
+      next({});
+    });
+  };
+
+  wr.onHeadersReceived = (filterOrListener, maybeListener) => {
+    const fn = typeof filterOrListener === "function" ? filterOrListener : maybeListener;
+    if (typeof fn === "function") headersRecvHandlers.push(fn);
+    origHeadersRecv({ urls: ["<all_urls>"] }, (details, cb) => {
+      let currentRespHeaders = details.responseHeaders;
+      let idx = 0;
+      const next = (res) => {
+        if (res && res.cancel) return cb(res);
+        if (res && res.responseHeaders) currentRespHeaders = res.responseHeaders;
+        if (idx >= headersRecvHandlers.length) {
+          return cb(currentRespHeaders !== details.responseHeaders ? { responseHeaders: currentRespHeaders } : {});
+        }
+        const h = headersRecvHandlers[idx++];
+        try {
+          h({ ...details, responseHeaders: currentRespHeaders }, next);
+        } catch {
+          next({});
+        }
+      };
+      next({});
+    });
+  };
+}
+
 async function createMainWindow() {
   configStore = new JsonConfigStore(path.join(app.getPath("userData"), "streamsync-desktop-config.json"));
   currentRoomUrl = configStore.get("serverUrl", DEFAULT_SERVER_URL);
@@ -214,6 +290,7 @@ async function createMainWindow() {
   const browserSession = session.fromPartition("persist:streamsync-browser");
 
   configureRoomHeaderAndCorsProxy(roomSession);
+  installWebRequestMultiplexer(browserSession);
 
   // Initialize uBlock / EasyList AdBlock Engine on browserSession
   adBlockManager = new DesktopAdBlockManager(app.getPath("userData"), configStore, () => {
@@ -221,12 +298,13 @@ async function createMainWindow() {
   });
   await adBlockManager.init(browserSession);
 
-  // Initialize VDH-grade Stream Sniffer & Manifest Parser (attached to browserView CDP debugger below)
+  // Initialize VDH-grade Stream Sniffer (webRequest multiplexer + CDP + subframe preload JS hooks)
   streamSniffer = new DesktopStreamSniffer((sortedStreams) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("streams:updated", sortedStreams);
     }
   });
+  streamSniffer.attachToSession(browserSession);
 
   roomView = new WebContentsView({
     webPreferences: {
@@ -240,12 +318,13 @@ async function createMainWindow() {
   browserView = new WebContentsView({
     webPreferences: {
       session: browserSession,
+      preload: path.join(__dirname, "browserPreload.js"),
+      nodeIntegrationInSubFrames: true,
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
 
-  // Attach CDP Network sniffer so it NEVER collides with @ghostery/adblocker-electron webRequest hooks
   streamSniffer.attachToWebContents(browserView.webContents);
 
   mainWindow.contentView.addChildView(roomView);
@@ -440,6 +519,23 @@ ipcMain.handle("shell:toggle-shield", () => {
   browserView.webContents.reload();
   sendShellState();
   return enabled;
+});
+
+ipcMain.on("browser:media-signal", (_e, payload) => {
+  if (!payload || !streamSniffer) return;
+  if (payload.type === "candidate" && payload.url) {
+    streamSniffer.submitCandidate(
+      payload.url,
+      payload.contentType || "",
+      { Referer: payload.pageUrl || currentBrowserUrl },
+      null,
+      false
+    );
+  } else if (payload.type === "structured" && Array.isArray(payload.items)) {
+    streamSniffer.ingestStructuredStreams(payload.items, payload.pageUrl, payload.pageTitle);
+  } else if (payload.type === "dom_meta") {
+    streamSniffer.enrichWithDomMeta(payload.durationSec, payload.width, payload.height);
+  }
 });
 
 ipcMain.handle("streams:clear", () => {

@@ -387,9 +387,19 @@ async function loadUnifiedPlayback(playback, title = null, broadcast = false, op
       pendingMediaBroadcast = null;
       ws.send(JSON.stringify(mediaMsg));
     } else if (intendedRoomId || currentRoomId) {
+      const targetCode = intendedRoomId || currentRoomId;
       pendingMediaBroadcast = mediaMsg;
+      // HTTP fallback guarantees room state updates on the server immediately even if WS is reconnecting
+      fetch(`/api/rooms/${encodeURIComponent(targetCode)}/media`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...mediaMsg,
+          by: (nicknameInput.value || "").trim() || "Host",
+        }),
+      }).catch(() => {});
       if (!ws || ws.readyState === WebSocket.CLOSED) {
-        connectToRoom(intendedRoomId || currentRoomId);
+        connectToRoom(targetCode);
       }
     }
   }

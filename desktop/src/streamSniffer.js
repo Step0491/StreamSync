@@ -37,6 +37,84 @@ class DesktopStreamSniffer {
     this.webContents = null;
   }
 
+  attachToSession(browserSession) {
+    // Capture outgoing headers across ALL frames & cross-origin OOPIFs
+    browserSession.webRequest.onBeforeSendHeaders({ urls: ["http://*/*", "https://*/*"] }, (details, callback) => {
+      try {
+        if (details.url && details.requestHeaders) {
+          const picked = {};
+          let hasRange = false;
+          for (const [k, v] of Object.entries(details.requestHeaders)) {
+            const low = k.toLowerCase();
+            if (low === "range") hasRange = true;
+            if ((low === "referer" || low === "origin" || low === "user-agent" || low === "cookie") && v) {
+              picked[k] = String(v);
+            }
+          }
+          if (Object.keys(picked).length > 0 || hasRange) {
+            this.requestHeadersById.set(`wr:${details.id}`, { url: details.url, headers: picked, hasRange });
+            if (this.requestHeadersById.size > 800) {
+              const firstKey = this.requestHeadersById.keys().next().value;
+              this.requestHeadersById.delete(firstKey);
+            }
+          }
+        }
+      } catch {}
+      callback({ cancel: false });
+    });
+
+    // Inspect real response Content-Type across ALL frames & OOPIFs (works alongside @ghostery/adblocker-electron via multiplexer)
+    browserSession.webRequest.onHeadersReceived({ urls: ["http://*/*", "https://*/*"] }, (details, callback) => {
+      try {
+        if (details.statusCode >= 200 && details.statusCode < 400 && details.url) {
+          const url = details.url;
+          if (!isSegmentOrNoiseUrl(url) && !/[?&]ump=1\b/i.test(url)) {
+            const respHeaders = details.responseHeaders || {};
+            const ct = this._getHeader(respHeaders, "content-type").toLowerCase();
+            const cr = this._getHeader(respHeaders, "content-range");
+            const cl = this._getHeader(respHeaders, "content-length");
+            if (!ct.includes("vnd.yt-ump") && !NON_MEDIA_CT_RE.test(ct)) {
+              const cached = this.requestHeadersById.get(`wr:${details.id}`);
+              const hasRange = Boolean(cached && cached.hasRange) || Boolean(cr);
+              const isMedia = MEDIA_CT_RE.test(ct) || CANDIDATE_URL_RE.test(url) || (hasRange && !ct.startsWith("text/html"));
+              if (isMedia) {
+                const headers = { ...(cached ? cached.headers : {}) };
+                if (!this._hasHeaderKey(headers, "referer") && this.activePageUrl) {
+                  headers.Referer = this.activePageUrl;
+                }
+                const wasRange = /[?&](range|bytestart)=/i.test(url) || Boolean(cr);
+                const totalSize = this._extractReliableTotalBytes(cr, cl, wasRange);
+                this.submitCandidate(url, ct, headers, totalSize, false);
+              }
+            }
+          }
+        }
+      } catch {}
+      callback({ cancel: false });
+    });
+  }
+
+  enrichWithDomMeta(durationSec, width, height) {
+    if ((!durationSec || durationSec <= 0.5) && (!height || height <= 0)) return;
+    let changed = false;
+    for (const [k, s] of this.streamsByKey.entries()) {
+      const needDur = !s.durationSec && !s.isLive && durationSec > 0.5;
+      const needDims = s.kind !== StreamKind.AUDIO_ONLY && !s.height && width > 0 && height > 0;
+      if (needDur || needDims) {
+        const updated = {
+          ...s,
+          durationSec: needDur ? durationSec : s.durationSec,
+          width: needDims ? width : s.width,
+          height: needDims ? height : s.height,
+        };
+        updated.subtitle = formatMetadataSubtitle(updated);
+        this.streamsByKey.set(k, updated);
+        changed = true;
+      }
+    }
+    if (changed) this._emit();
+  }
+
   attachToWebContents(webContents) {
     this.webContents = webContents;
     try {
