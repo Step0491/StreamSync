@@ -62,8 +62,12 @@ class MainActivity : AppCompatActivity() {
         btnUpdate = findViewById(R.id.btnUpdate)
         val btnGo: Button = findViewById(R.id.btnGo)
 
-        val savedServer = prefs.getString("server_url", "https://streamsync.onrender.com")
-            ?: "https://streamsync.onrender.com"
+        val defaultServer = "https://streamsync-pj98.onrender.com/"
+        var savedServer = prefs.getString("server_url", defaultServer) ?: defaultServer
+        if (savedServer == "https://streamsync.onrender.com" || savedServer == "https://streamsync.onrender.com/") {
+            savedServer = defaultServer
+            prefs.edit().putString("server_url", defaultServer).apply()
+        }
 
         configureWebView(roomWebView, isMediaBrowser = false)
         configureWebView(browserWebView, isMediaBrowser = true)
@@ -196,7 +200,7 @@ class MainActivity : AppCompatActivity() {
             "if (window.loadFromNativeApp) { window.loadFromNativeApp($jsVideo, $jsAudio, $jsTitle); true; } else { false; }"
         ) { result ->
             if (result != "true") {
-                val base = (roomWebView.url ?: prefs.getString("server_url", "https://streamsync.onrender.com"))!!
+                val base = (roomWebView.url ?: prefs.getString("server_url", "https://streamsync-pj98.onrender.com/"))!!
                 val uri = Uri.parse(base).buildUpon()
                     .appendQueryParameter("video", videoUrl)
                     .appendQueryParameter("title", pageTitle)

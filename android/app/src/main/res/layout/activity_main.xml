@@ -88,7 +88,7 @@
             android:layout_marginEnd="6dp"
             android:layout_weight="1"
             android:background="#0B0F17"
-            android:hint="https://streamsync-xxxx.onrender.com"
+            android:hint="https://streamsync-pj98.onrender.com/"
             android:imeOptions="actionGo"
             android:inputType="textUri"
             android:paddingStart="10dp"
