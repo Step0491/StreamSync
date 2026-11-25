@@ -265,11 +265,10 @@ async function createMainWindow() {
   browserView.webContents.on("did-start-navigation", (_e, url, _isInPlace, isMainFrame) => {
     if (!isMainFrame || !url) return;
     currentBrowserUrl = url;
-    const sig = computeNavSignature(url);
-    if (sig && sig !== lastBrowserNavSig) {
-      lastBrowserNavSig = sig;
+    const domainSig = extractHost(url) ? registrableDomain(extractHost(url)) : "";
+    if (domainSig && domainSig !== lastBrowserNavSig) {
+      lastBrowserNavSig = domainSig;
       adBlockManager.syncForNavigation(url, true);
-      streamSniffer.clearForNewPage(url);
     } else {
       adBlockManager.syncForNavigation(url, false);
     }
@@ -360,11 +359,6 @@ async function createMainWindow() {
   browserView.webContents.on("did-navigate-in-page", (_e, url, isMainFrame) => {
     if (!isMainFrame || !url) return;
     currentBrowserUrl = url;
-    const sig = computeNavSignature(url);
-    if (sig && sig !== lastBrowserNavSig) {
-      lastBrowserNavSig = sig;
-      streamSniffer.clearForNewPage(url);
-    }
     sendShellState();
     setTimeout(scanPagePlayerStreams, 1200);
   });
@@ -427,6 +421,7 @@ ipcMain.handle("shell:navigate", (_e, rawUrl) => {
     roomView.webContents.loadURL(target);
   } else {
     currentBrowserUrl = target;
+    streamSniffer.clearForNewPage(target);
     browserView.webContents.loadURL(target);
   }
   sendShellState();

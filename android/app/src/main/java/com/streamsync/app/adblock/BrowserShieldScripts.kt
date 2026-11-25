@@ -165,6 +165,7 @@ object BrowserShieldScripts {
                     const sd = pr && pr.streamingData;
                     if (sd && vidId && vidId !== lastYtVideoId) {
                       lastYtVideoId = vidId;
+                      const vidDurSec = Number((pr.videoDetails && pr.videoDetails.lengthSeconds) || 0);
                       const all = [].concat(sd.formats || [], sd.adaptiveFormats || []);
                       for (let i = 0; i < all.length; i++) {
                         const f = all[i];
@@ -184,6 +185,7 @@ object BrowserShieldScripts {
                           : ((res || 'Video') + ' • ' + (kind === 'VIDEO_ONLY' ? 'Video-Only' : 'Combined') + ' (' + ext.toUpperCase() + ')');
                         const vcodec = isVideo ? codecs.split(',')[0].trim() : '';
                         const acodec = isAudio ? codecs.split(',')[0].trim() : (hasBoth && codecs.indexOf(',') >= 0 ? codecs.split(',')[1].trim() : '');
+                        const approxDur = f.approxDurationMs ? (Number(f.approxDurationMs) / 1000) : vidDurSec;
                         window.StreamSnifferBridge.onStructuredStream(
                           String(f.url),
                           kind,
@@ -192,6 +194,7 @@ object BrowserShieldScripts {
                           Number(f.width || 0),
                           Number(f.height || 0),
                           Number(f.fps || 0),
+                          Number(approxDur || 0),
                           vcodec,
                           acodec,
                           f.bitrate ? Math.round(Number(f.bitrate) / 1000) : 0,
@@ -206,13 +209,13 @@ object BrowserShieldScripts {
                       if (sd.hlsManifestUrl) {
                         window.StreamSnifferBridge.onStructuredStream(
                           String(sd.hlsManifestUrl), 'COMBINED', 'm3u8', 'HLS Master (YouTube)',
-                          0, 0, 0, '', '', 0, 0, '', true, false, String(location.href || ''), String(document.title || '')
+                          0, 0, 0, vidDurSec, '', '', 0, 0, '', true, false, String(location.href || ''), String(document.title || '')
                         );
                       }
                       if (sd.dashManifestUrl) {
                         window.StreamSnifferBridge.onStructuredStream(
                           String(sd.dashManifestUrl), 'COMBINED', 'mpd', 'DASH Master (YouTube)',
-                          0, 0, 0, '', '', 0, 0, '', false, true, String(location.href || ''), String(document.title || '')
+                          0, 0, 0, vidDurSec, '', '', 0, 0, '', false, true, String(location.href || ''), String(document.title || '')
                         );
                       }
                     }

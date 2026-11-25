@@ -281,14 +281,15 @@ class MainActivity : AppCompatActivity() {
                 if (url != null) {
                     currentBrowserUrl = url
                     if (!showingRoom) etUrl.setText(url)
+                    streamSniffer.activePageUrl = url
 
-                    val navSignature = computeTopLevelNavSignature(url)
-                    if (navSignature.isNotEmpty() && navSignature != lastClearedNavHostPath) {
-                        lastClearedNavHostPath = navSignature
+                    // Reset only the per-page AdBlock counter on new site domain;
+                    // NEVER wipe detectedStreams automatically on play-button redirects/reloads
+                    // (matches Video DownloadHelper behavior — user clears explicitly or via Address Bar Go).
+                    val navDomain = FilterRuleEngine.parseUriSafe(url)?.host?.let { FilterRuleEngine.registrableDomain(it) }.orEmpty()
+                    if (navDomain.isNotEmpty() && navDomain != lastClearedNavHostPath) {
+                        lastClearedNavHostPath = navDomain
                         adBlockEngine.resetPageCounter()
-                        streamSniffer.clearForNewTopLevelPage(url)
-                    } else {
-                        streamSniffer.activePageUrl = url
                     }
 
                     updateShieldButton()
@@ -427,6 +428,8 @@ class MainActivity : AppCompatActivity() {
             roomWebView.loadUrl(url)
         } else {
             currentBrowserUrl = url
+            streamSniffer.clearForNewTopLevelPage(url)
+            adBlockEngine.resetPageCounter()
             browserWebView.loadUrl(url)
         }
     }

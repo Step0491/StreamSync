@@ -120,20 +120,38 @@ function splitCodecs(codecsRaw) {
   return { vcodec, acodec };
 }
 
+function formatDurationBadge(s) {
+  if (s.isLive) return "LIVE";
+  const d = Number(s.durationSec || 0);
+  if (!Number.isFinite(d) || d <= 0.5) return null;
+  const total = Math.floor(d);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = total % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
+    : `${m}:${String(sec).padStart(2, "0")}`;
+}
+
 function formatMetadataSubtitle(s) {
   const pills = [(s.container || "MP4").toUpperCase()];
-  if (s.height && s.height > 0) {
+  if (s.width && s.height && s.height > 0) {
+    const fpsStr = s.fps && s.fps >= 48 ? `@${Math.round(s.fps)}fps` : "";
+    pills.push(`${s.width}x${s.height} (${s.height}p${fpsStr})`);
+  } else if (s.height && s.height > 0) {
     const fpsStr = s.fps && s.fps >= 48 ? String(Math.round(s.fps)) : "";
     pills.push(`${s.height}p${fpsStr}`);
   } else if (s.isMasterPlaylist) {
     pills.push("Adaptive");
   }
+  const dur = formatDurationBadge(s);
+  if (dur) pills.push(`⏱ ${dur}`);
   if (s.language) pills.push(`Lang: ${s.language}`);
   const v = friendlyCodec(s.vcodec);
   const a = friendlyCodec(s.acodec);
-  if (v && a) pills.push(`${v} + ${a}`);
-  else if (v) pills.push(v);
-  else if (a) pills.push(a);
+  if (v && a) pills.push(`V:${v} + A:${a}`);
+  else if (v) pills.push(`V:${v}`);
+  else if (a) pills.push(`A:${a}`);
 
   if (s.bitrateKbps && s.bitrateKbps > 0) {
     pills.push(
@@ -142,10 +160,17 @@ function formatMetadataSubtitle(s) {
         : `${s.bitrateKbps} kbps`
     );
   }
-  if (s.contentLength && s.contentLength > 0) {
-    const mb = s.contentLength / (1024 * 1024);
+  let bytes = s.contentLength && s.contentLength > 0 ? s.contentLength : null;
+  let est = false;
+  if (!bytes && !s.isLive && s.bitrateKbps > 0 && s.durationSec > 1) {
+    bytes = Math.round(((s.bitrateKbps * 1000) / 8) * s.durationSec);
+    est = true;
+  }
+  if (bytes && bytes > 0) {
+    const prefix = est ? "~" : "";
+    const mb = bytes / (1024 * 1024);
     pills.push(
-      mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.round(s.contentLength / 1024)} KB`
+      mb >= 1024 ? `${prefix}${(mb / 1024).toFixed(2)} GB` : mb >= 1 ? `${prefix}${mb.toFixed(1)} MB` : `${prefix}${Math.round(bytes / 1024)} KB`
     );
   }
   if (s.kind === StreamKind.VIDEO_ONLY) pills.push("Video-Only (No Audio)");
@@ -381,10 +406,25 @@ function parseHlsManifest(manifestUrl, content, headers = {}, pageTitle = "") {
     return { streams: deduped, childOverrides, isDrmProtected: sawDrm };
   }
 
-  // Media Playlist (#EXTINF)
+  // Media Playlist (#EXTINF) — sum durations just like Video DownloadHelper
   const segLines = lines.filter((l) => !l.startsWith("#")).slice(0, 8);
   const mapLine = lines.find((l) => l.startsWith("#EXT-X-MAP:"));
   const mapUri = mapLine ? parseHlsAttributes(mapLine.slice("#EXT-X-MAP:".length)).URI || "" : "";
+  let totalDuration = 0;
+  let extinfCount = 0;
+  for (const line of lines) {
+    if (line.startsWith("#EXTINF:")) {
+      const d = parseFloat(line.slice("#EXTINF:".length).split(",")[0]);
+      if (Number.isFinite(d) && d > 0) {
+        totalDuration += d;
+        extinfCount++;
+      }
+    }
+  }
+  const hasEndList = lines.some((l) => l.startsWith("#EXT-X-ENDLIST"));
+  const isVod = hasEndList || lines.some((l) => /PLAYLIST-TYPE:VOD/i.test(l));
+  const isLive = extinfCount > 0 && !isVod;
+
   const samples = [...segLines, mapUri].filter(Boolean);
   const lowerUrl = cleanMasterUrl.toLowerCase();
 
@@ -417,6 +457,8 @@ function parseHlsManifest(manifestUrl, content, headers = {}, pageTitle = "") {
     width: null,
     height: null,
     fps: null,
+    durationSec: !isLive && totalDuration > 0.5 ? totalDuration : null,
+    isLive,
     vcodec: null,
     acodec: null,
     bitrateKbps: null,

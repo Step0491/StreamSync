@@ -1,5 +1,6 @@
 package com.streamsync.app.extractor
 
+import android.media.MediaMetadataRetriever
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
@@ -222,10 +223,19 @@ class StreamSniffer(
             val respCt = (conn.contentType ?: contentTypeHint).lowercase(Locale.ROOT)
             val totalSize = extractReliableTotalLength(conn, sentRange)
 
-            // Reject non-media HTML/JSON/image responses captured from ambiguous URLs
+            val hasExplicitMediaExt = Regex(
+                """\.(m3u8|mpd|mp4|webm|m4v|mov|m4a|mp3|aac|ogg|opus|flac)(\?|#|$)|mime=(video|audio)|/videoplayback\b""",
+                RegexOption.IGNORE_CASE
+            ).containsMatchIn(cleanUrl)
+
+            // Reject HTML/image responses ONLY for ambiguous extensionless URLs.
+            // If URL has explicit media extension (e.g. .m3u8/.mp4), keep optimistic entry because
+            // background HttpURLConnection probes can hit Cloudflare/anti-bot HTML challenges while WebView plays fine!
             if (respCt.startsWith("text/html") || respCt.startsWith("image/") || respCt.startsWith("text/css")) {
-                streamsByKey.remove(normKey)
-                notifyUpdated()
+                if (!hasExplicitMediaExt) {
+                    streamsByKey.remove(normKey)
+                    notifyUpdated()
+                }
                 return
             }
 
@@ -256,16 +266,35 @@ class StreamSniffer(
 
                 val parsed = ManifestParser.parseHlsManifest(cleanUrl, textSample, headers, pageTitle)
                 if (parsed != null) {
+                    // If this is an HLS Master Playlist, probe the first child variant once to obtain
+                    // exact total duration (#EXTINF sum) & LIVE status, then propagate to all variants!
+                    var masterDuration: Double? = null
+                    var masterIsLive = false
+                    val firstChildVariant = parsed.streams.firstOrNull { !it.isMasterPlaylist && it.isHls }
+                    if (firstChildVariant != null && parsed.streams.any { it.isMasterPlaylist }) {
+                        val durPair = probeHlsChildDuration(firstChildVariant.url, headers)
+                        if (durPair != null) {
+                            masterDuration = durPair.first
+                            masterIsLive = durPair.second
+                        }
+                    }
+
                     for ((childKey, childStream) in parsed.childOverrides) {
-                        childOverrides[childKey] = childStream
-                        // Retroactively upgrade any already-captured child .m3u8!
+                        val enriched = childStream.copy(
+                            durationSec = childStream.durationSec ?: masterDuration,
+                            isLive = childStream.isLive || masterIsLive
+                        )
+                        childOverrides[childKey] = enriched
                         if (streamsByKey.containsKey(childKey)) {
-                            streamsByKey[childKey] = childStream
+                            streamsByKey[childKey] = enriched
                         }
                     }
                     for (s in parsed.streams) {
-                        val overrideForS = childOverrides[s.normalizedUrl]
-                        streamsByKey[s.normalizedUrl] = overrideForS ?: s
+                        val base = childOverrides[s.normalizedUrl] ?: s
+                        streamsByKey[s.normalizedUrl] = base.copy(
+                            durationSec = base.durationSec ?: masterDuration,
+                            isLive = base.isLive || masterIsLive
+                        )
                     }
                     notifyUpdated()
                     return
@@ -294,14 +323,46 @@ class StreamSniffer(
 
             val ext = ManifestParser.guessContainerExt(cleanUrl, respCt)
             val probe = ManifestParser.inspectContainerBytes(headBytes, respCt, cleanUrl)
+
+            var width = probe.width
+            var height = probe.height
+            var durationSec = probe.durationSec
+            var bitrateKbps: Int? = null
+            var effectiveKind = probe.kind
+
+            // If moov/mvhd wasn't in the first 64KB, use Android's native MediaMetadataRetriever
+            // (performs HTTP Range seeks to read exact duration, dimensions, bitrate, and track types!)
+            if (durationSec == null || (effectiveKind != StreamKind.AUDIO_ONLY && height == null)) {
+                val mmrInfo = probeWithMediaMetadataRetriever(cleanUrl, headers)
+                if (mmrInfo != null) {
+                    if (durationSec == null) durationSec = mmrInfo.durationSec
+                    if (width == null) width = mmrInfo.width
+                    if (height == null) height = mmrInfo.height
+                    if (bitrateKbps == null) bitrateKbps = mmrInfo.bitrateKbps
+                    if (mmrInfo.hasVideo != null && mmrInfo.hasAudio != null) {
+                        effectiveKind = when {
+                            mmrInfo.hasVideo && mmrInfo.hasAudio -> StreamKind.COMBINED
+                            mmrInfo.hasVideo -> StreamKind.VIDEO_ONLY
+                            mmrInfo.hasAudio -> StreamKind.AUDIO_ONLY
+                            else -> effectiveKind
+                        }
+                    }
+                }
+            }
+
+            if (bitrateKbps == null && totalSize != null && totalSize > 0 && durationSec != null && durationSec > 1.0) {
+                bitrateKbps = ((totalSize * 8.0) / (durationSec * 1000.0)).toInt().takeIf { it > 0 }
+            }
+
             val codecLabel = listOfNotNull(
                 probe.vcodec?.let { DetectedStream.friendlyCodec(it) },
                 probe.acodec?.let { DetectedStream.friendlyCodec(it) }
             ).joinToString("+").takeIf { it.isNotEmpty() }
+            val resPrefix = height?.let { "${it}p • " } ?: ""
 
-            val richLabel = when (probe.kind) {
-                StreamKind.COMBINED -> "Video + Audio (${ext.uppercase(Locale.ROOT)}${codecLabel?.let { " • $it" } ?: ""})"
-                StreamKind.VIDEO_ONLY -> "Video-Only (${ext.uppercase(Locale.ROOT)}${codecLabel?.let { " • $it" } ?: ""})"
+            val richLabel = when (effectiveKind) {
+                StreamKind.COMBINED -> "${resPrefix}Video + Audio (${ext.uppercase(Locale.ROOT)}${codecLabel?.let { " • $it" } ?: ""})"
+                StreamKind.VIDEO_ONLY -> "${resPrefix}Video-Only (${ext.uppercase(Locale.ROOT)}${codecLabel?.let { " • $it" } ?: ""})"
                 StreamKind.AUDIO_ONLY -> "Audio-Only (${ext.uppercase(Locale.ROOT)}${codecLabel?.let { " • $it" } ?: ""})"
             }
 
@@ -309,11 +370,15 @@ class StreamSniffer(
                 id = normKey,
                 url = cleanUrl,
                 normalizedUrl = normKey,
-                kind = probe.kind,
+                kind = effectiveKind,
                 container = ext,
                 label = richLabel,
+                width = width,
+                height = height,
+                durationSec = durationSec,
                 vcodec = probe.vcodec,
                 acodec = probe.acodec,
+                bitrateKbps = bitrateKbps,
                 contentLength = totalSize,
                 isDrmProtected = probe.isDrmProtected,
                 pageTitle = pageTitle,
@@ -322,6 +387,69 @@ class StreamSniffer(
             notifyUpdated()
         } catch (_: Exception) {
             // Keep optimistic entry if probe timed out or CORS/TLS quirk occurred
+        } finally {
+            try {
+                conn?.disconnect()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private data class NativeMediaMeta(
+        val durationSec: Double?,
+        val width: Int?,
+        val height: Int?,
+        val bitrateKbps: Int?,
+        val hasVideo: Boolean?,
+        val hasAudio: Boolean?
+    )
+
+    private fun probeWithMediaMetadataRetriever(url: String, headers: Map<String, String>): NativeMediaMeta? {
+        val mmr = MediaMetadataRetriever()
+        return try {
+            mmr.setDataSource(url, HashMap(headers))
+            val durMs = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+            val w = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
+            val h = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
+            val br = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toLongOrNull()
+            val hasV = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO)?.equals("yes", ignoreCase = true)
+            val hasA = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO)?.equals("yes", ignoreCase = true)
+            NativeMediaMeta(
+                durationSec = durMs?.takeIf { it > 0 }?.let { it / 1000.0 },
+                width = w?.takeIf { it > 0 },
+                height = h?.takeIf { it > 0 },
+                bitrateKbps = br?.takeIf { it > 0 }?.let { (it / 1000L).toInt() },
+                hasVideo = hasV,
+                hasAudio = hasA
+            )
+        } catch (_: Exception) {
+            null
+        } finally {
+            try {
+                mmr.release()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun probeHlsChildDuration(childUrl: String, headers: Map<String, String>): Pair<Double?, Boolean>? {
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = (URL(childUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                instanceFollowRedirects = true
+                connectTimeout = 5_000
+                readTimeout = 6_000
+                for ((k, v) in headers) setRequestProperty(k, v)
+            }
+            if (conn.responseCode !in 200..299) return null
+            val bytes = readUpTo(conn, 256 * 1024)
+            val text = String(bytes, StandardCharsets.UTF_8)
+            val parsed = ManifestParser.parseHlsManifest(childUrl, text, headers, null)
+            val first = parsed?.streams?.firstOrNull() ?: return null
+            first.durationSec to first.isLive
+        } catch (_: Exception) {
+            null
         } finally {
             try {
                 conn?.disconnect()
@@ -443,6 +571,7 @@ class StreamSniffer(
             width: Int,
             height: Int,
             fps: Double,
+            durationSec: Double,
             vcodec: String?,
             acodec: String?,
             bitrateKbps: Int,
@@ -476,6 +605,7 @@ class StreamSniffer(
                 width = width.takeIf { it > 0 },
                 height = height.takeIf { it > 0 },
                 fps = fps.takeIf { it > 0.0 },
+                durationSec = durationSec.takeIf { it > 0.5 && !it.isNaN() && !it.isInfinite() },
                 vcodec = vcodec?.takeIf { it.isNotBlank() },
                 acodec = acodec?.takeIf { it.isNotBlank() },
                 bitrateKbps = bitrateKbps.takeIf { it > 0 },

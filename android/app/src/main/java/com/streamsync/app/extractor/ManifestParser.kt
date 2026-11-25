@@ -21,6 +21,9 @@ data class DashParseResult(
 
 data class ContainerProbeResult(
     val kind: StreamKind,
+    val width: Int? = null,
+    val height: Int? = null,
+    val durationSec: Double? = null,
     val vcodec: String? = null,
     val acodec: String? = null,
     val isDrmProtected: Boolean = false
@@ -335,10 +338,26 @@ object ManifestParser {
             )
         }
 
-        // Media Playlist (#EXTINF segments)
+        // Media Playlist (#EXTINF segments) — sum durations just like Video DownloadHelper!
         val segmentLines = lines.filter { !it.startsWith("#") }.take(8)
         val mapLine = lines.firstOrNull { it.startsWith("#EXT-X-MAP:") }
         val mapUri = mapLine?.let { parseHlsAttributes(it.removePrefix("#EXT-X-MAP:"))["URI"] } ?: ""
+
+        var totalDuration = 0.0
+        var extinfCount = 0
+        for (line in lines) {
+            if (line.startsWith("#EXTINF:")) {
+                val durStr = line.removePrefix("#EXTINF:").substringBefore(',').trim()
+                val d = durStr.toDoubleOrNull()
+                if (d != null && d > 0.0) {
+                    totalDuration += d
+                    extinfCount++
+                }
+            }
+        }
+        val hasEndList = lines.any { it.startsWith("#EXT-X-ENDLIST") }
+        val isVodPlaylist = hasEndList || lines.any { it.contains("PLAYLIST-TYPE:VOD", ignoreCase = true) }
+        val isLivePlaylist = extinfCount > 0 && !isVodPlaylist
 
         val lowerUrl = cleanMasterUrl.lowercase(Locale.ROOT)
         val allSegSamples = (segmentLines + listOf(mapUri)).filter { it.isNotBlank() }
@@ -369,6 +388,8 @@ object ManifestParser {
             kind = kind,
             container = "m3u8",
             label = label,
+            durationSec = totalDuration.takeIf { it > 0.5 && !isLivePlaylist },
+            isLive = isLivePlaylist,
             isHls = true,
             isMasterPlaylist = false,
             isDrmProtected = sawDrm,
@@ -439,6 +460,11 @@ object ManifestParser {
         ) {
             sawDrm = true
         }
+
+        val mpdRoot = doc.documentElement
+        val mpdType = mpdRoot?.getAttribute("type")?.lowercase(Locale.ROOT).orEmpty()
+        val isDashLive = mpdType == "dynamic"
+        val mpdDurationSec = parseIso8601Duration(mpdRoot?.getAttribute("mediaPresentationDuration"))
 
         val cleanMpdUrl = stripRangeQueryParams(manifestUrl)
         val mpdKey = normalizeUrlForKey(cleanMpdUrl)
@@ -515,6 +541,8 @@ object ManifestParser {
                                         width = width,
                                         height = height,
                                         fps = fps,
+                                        durationSec = mpdDurationSec,
+                                        isLive = isDashLive,
                                         vcodec = vc ?: codecs,
                                         bitrateKbps = bwKbps,
                                         isDash = false,
@@ -533,6 +561,8 @@ object ManifestParser {
                                         kind = StreamKind.AUDIO_ONLY,
                                         container = ext,
                                         label = "${adaptLang?.uppercase(Locale.ROOT) ?: "Audio"}${bwKbps?.let { " ($it kbps)" } ?: ""} • DASH Audio",
+                                        durationSec = mpdDurationSec,
+                                        isLive = isDashLive,
                                         acodec = ac ?: codecs,
                                         bitrateKbps = bwKbps,
                                         language = adaptLang,
@@ -566,6 +596,8 @@ object ManifestParser {
             label = "$resText • DASH (.mpd)",
             width = maxWidth.takeIf { it > 0 },
             height = maxHeight.takeIf { it > 0 },
+            durationSec = mpdDurationSec,
+            isLive = isDashLive,
             vcodec = bestVCodec,
             acodec = bestACodec,
             bitrateKbps = maxBwKbps.takeIf { it > 0 },
@@ -582,6 +614,18 @@ object ManifestParser {
             streams = streams.distinctBy { it.normalizedUrl },
             isDrmProtected = sawDrm
         )
+    }
+
+    fun parseIso8601Duration(raw: String?): Double? {
+        if (raw.isNullOrBlank()) return null
+        val m = Regex("""^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$""", RegexOption.IGNORE_CASE)
+            .find(raw.trim()) ?: return null
+        val days = m.groupValues[1].toDoubleOrNull() ?: 0.0
+        val hours = m.groupValues[2].toDoubleOrNull() ?: 0.0
+        val mins = m.groupValues[3].toDoubleOrNull() ?: 0.0
+        val secs = m.groupValues[4].toDoubleOrNull() ?: 0.0
+        val total = days * 86400.0 + hours * 3600.0 + mins * 60.0 + secs
+        return if (total > 0.0) total else null
     }
 
     private fun parseDashFrameRate(raw: String?): Double? {
@@ -622,15 +666,17 @@ object ManifestParser {
                 val hasSoun = "soun" in handlers
                 val vcodec = detectIsoVideoCodec(headerBytes)
                 val acodec = detectIsoAudioCodec(headerBytes)
+                val durSec = parseIsoMvhdDuration(headerBytes)
+                val dims = parseIsoTkhdDimensions(headerBytes)
 
                 if (hasVide && hasSoun) {
-                    return ContainerProbeResult(StreamKind.COMBINED, vcodec, acodec, sawEncvOrEnca)
+                    return ContainerProbeResult(StreamKind.COMBINED, dims?.first, dims?.second, durSec, vcodec, acodec, sawEncvOrEnca)
                 }
                 if (hasVide && !hasSoun) {
-                    return ContainerProbeResult(StreamKind.VIDEO_ONLY, vcodec, null, sawEncvOrEnca)
+                    return ContainerProbeResult(StreamKind.VIDEO_ONLY, dims?.first, dims?.second, durSec, vcodec, null, sawEncvOrEnca)
                 }
                 if (hasSoun && !hasVide) {
-                    return ContainerProbeResult(StreamKind.AUDIO_ONLY, null, acodec, sawEncvOrEnca)
+                    return ContainerProbeResult(StreamKind.AUDIO_ONLY, null, null, durSec, null, acodec, sawEncvOrEnca)
                 }
             }
         }
@@ -660,9 +706,9 @@ object ManifestParser {
                 containsAsciiToken(headerBytes, "A_VORBIS") -> "Vorbis"
                 else -> null
             }
-            if (hasWebmVideo && hasWebmAudio) return ContainerProbeResult(StreamKind.COMBINED, vcodec, acodec)
-            if (hasWebmVideo) return ContainerProbeResult(StreamKind.VIDEO_ONLY, vcodec, null)
-            if (hasWebmAudio) return ContainerProbeResult(StreamKind.AUDIO_ONLY, null, acodec)
+            if (hasWebmVideo && hasWebmAudio) return ContainerProbeResult(StreamKind.COMBINED, vcodec = vcodec, acodec = acodec)
+            if (hasWebmVideo) return ContainerProbeResult(StreamKind.VIDEO_ONLY, vcodec = vcodec, acodec = null)
+            if (hasWebmAudio) return ContainerProbeResult(StreamKind.AUDIO_ONLY, vcodec = null, acodec = acodec)
         }
 
         // 3. Fallback to URL query/itag/mime hints & Content-Type
@@ -747,6 +793,76 @@ object ManifestParser {
             }
         }
         return found
+    }
+
+    private fun readUint32BE(b: ByteArray, off: Int): Long {
+        if (off + 4 > b.size) return 0L
+        return ((b[off].toLong() and 0xFF) shl 24) or
+            ((b[off + 1].toLong() and 0xFF) shl 16) or
+            ((b[off + 2].toLong() and 0xFF) shl 8) or
+            (b[off + 3].toLong() and 0xFF)
+    }
+
+    private fun readUint64BE(b: ByteArray, off: Int): Long {
+        if (off + 8 > b.size) return 0L
+        return (readUint32BE(b, off) shl 32) or readUint32BE(b, off + 4)
+    }
+
+    /** Parses ISO-BMFF 'mvhd' box to extract exact duration in seconds. */
+    private fun parseIsoMvhdDuration(bytes: ByteArray): Double? {
+        val limit = bytes.size - 32
+        var i = 4
+        while (i <= limit) {
+            if (bytes[i] == 'm'.code.toByte() &&
+                bytes[i + 1] == 'v'.code.toByte() &&
+                bytes[i + 2] == 'h'.code.toByte() &&
+                bytes[i + 3] == 'd'.code.toByte()
+            ) {
+                val version = bytes[i + 4].toInt() and 0xFF
+                if (version == 0 && i + 24 <= bytes.size) {
+                    val timescale = readUint32BE(bytes, i + 16)
+                    val duration = readUint32BE(bytes, i + 20)
+                    if (timescale > 0 && duration > 0) return duration.toDouble() / timescale.toDouble()
+                } else if (version == 1 && i + 36 <= bytes.size) {
+                    val timescale = readUint32BE(bytes, i + 24)
+                    val duration = readUint64BE(bytes, i + 28)
+                    if (timescale > 0 && duration > 0) return duration.toDouble() / timescale.toDouble()
+                }
+                return null
+            }
+            i++
+        }
+        return null
+    }
+
+    /** Parses ISO-BMFF 'tkhd' boxes to extract max video track width & height (16.16 fixed-point). */
+    private fun parseIsoTkhdDimensions(bytes: ByteArray): Pair<Int, Int>? {
+        var bestW = 0
+        var bestH = 0
+        val limit = bytes.size - 92
+        var i = 4
+        while (i <= limit) {
+            if (bytes[i] == 't'.code.toByte() &&
+                bytes[i + 1] == 'k'.code.toByte() &&
+                bytes[i + 2] == 'h'.code.toByte() &&
+                bytes[i + 3] == 'd'.code.toByte()
+            ) {
+                val version = bytes[i + 4].toInt() and 0xFF
+                val dimOff = if (version == 1) i + 88 else i + 76
+                if (dimOff + 8 <= bytes.size) {
+                    val w = (readUint32BE(bytes, dimOff) shr 16).toInt()
+                    val h = (readUint32BE(bytes, dimOff + 4) shr 16).toInt()
+                    if (w in 120..7680 && h in 90..4320 && h > bestH) {
+                        bestW = w
+                        bestH = h
+                    }
+                }
+                i += 80
+            } else {
+                i++
+            }
+        }
+        return if (bestW > 0 && bestH > 0) bestW to bestH else null
     }
 
     private fun detectIsoVideoCodec(bytes: ByteArray): String? {

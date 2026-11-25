@@ -368,9 +368,12 @@ class DesktopStreamSniffer {
       }
 
       const respCt = (resp.headers.get("content-type") || contentTypeHint || "").toLowerCase();
+      const hasExplicitExt = /\.(m3u8|mpd|mp4|webm|m4v|mov|m4a|mp3|aac|ogg|opus|flac)(\?|#|$)|mime=(video|audio)|\/videoplayback\b/i.test(cleanUrl);
       if (respCt.startsWith("text/html") || respCt.startsWith("image/") || respCt.startsWith("text/css")) {
-        this.streamsByKey.delete(normKey);
-        this._emit();
+        if (!hasExplicitExt) {
+          this.streamsByKey.delete(normKey);
+          this._emit();
+        }
         return;
       }
 
