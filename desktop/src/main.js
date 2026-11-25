@@ -574,21 +574,27 @@ ipcMain.handle("room:register-headers", (_e, payload) => {
 ipcMain.handle("room:extract-source-url", async (_e, { sourceUrl, wantPaired }) => {
   if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl) || !streamSniffer || !browserView) return null;
 
-  // Load sourceUrl silently in background browserView (staying on Room tab!) to get a fresh IP-bound token
+  // Mute background browserView so there is ZERO double audio while extracting the fresh IP-valid token
+  browserView.webContents.setAudioMuted(true);
   currentBrowserUrl = sourceUrl;
   streamSniffer.clearForNewPage(sourceUrl);
   browserView.webContents.loadURL(sourceUrl).catch(() => {});
 
-  // Try clicking any visible <video> / play button once loaded to trigger player stream requests
-  setTimeout(() => {
-    if (browserView && !browserView.webContents.isDestroyed()) {
-      browserView.webContents
-        .executeJavaScript(
-          `(function(){try{var v=document.querySelector('video');if(v&&v.paused)v.play().catch(function(){});var btn=document.querySelector('.vjs-big-play-button,.plyr__control--overlaid,.jw-icon-display,[aria-label*="Play" i]');if(btn)btn.click();}catch(_){}})();`
-        )
-        .catch(() => {});
+  // Trigger silent Play across main frame AND all cross-origin iframes
+  const triggerPlayAllFrames = () => {
+    if (!browserView || browserView.webContents.isDestroyed()) return;
+    const js = `(function(){try{var v=document.querySelector('video');if(v){v.muted=true;v.volume=0;if(v.paused)v.play().catch(function(){});}var btn=document.querySelector('.vjs-big-play-button,.plyr__control--overlaid,.jw-icon-display,.jw-display-icon-container,[aria-label*="Play" i],.play-button');if(btn)btn.click();}catch(_){}})();`;
+    try {
+      const frames = browserView.webContents.mainFrame ? browserView.webContents.mainFrame.framesInSubtree : [];
+      for (const frame of frames) {
+        frame.executeJavaScript(js).catch(() => {});
+      }
+    } catch {
+      browserView.webContents.executeJavaScript(js).catch(() => {});
     }
-  }, 2200);
+  };
+  const playPulse1 = setTimeout(triggerPlayAllFrames, 1800);
+  const playPulse2 = setTimeout(triggerPlayAllFrames, 4000);
 
   return await new Promise((resolve) => {
     const start = Date.now();
@@ -613,6 +619,12 @@ ipcMain.handle("room:extract-source-url", async (_e, { sourceUrl, wantPaired }) 
 
       if (chosenVideo) {
         clearInterval(timer);
+        clearTimeout(playPulse1);
+        clearTimeout(playPulse2);
+        // Stop background browser page immediately and unmute for future manual browsing
+        browserView.webContents.loadURL("about:blank").catch(() => {});
+        browserView.webContents.setAudioMuted(false);
+
         const mergedHeaders = { ...(chosenVideo.requestHeaders || {}) };
         if (chosenAudio && chosenAudio.requestHeaders) {
           for (const [k, v] of Object.entries(chosenAudio.requestHeaders)) {
@@ -637,6 +649,9 @@ ipcMain.handle("room:extract-source-url", async (_e, { sourceUrl, wantPaired }) 
 
       if (Date.now() - start > 15000) {
         clearInterval(timer);
+        clearTimeout(playPulse1);
+        clearTimeout(playPulse2);
+        browserView.webContents.setAudioMuted(false);
         resolve(null);
       }
     }, 500);

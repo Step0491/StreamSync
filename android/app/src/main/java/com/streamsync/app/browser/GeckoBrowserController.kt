@@ -240,6 +240,18 @@ class GeckoBrowserController(
         }
     }
 
+    fun setGuestAutoPlayMode(active: Boolean) {
+        try {
+            nativePort?.postMessage(
+                JSONObject().apply {
+                    put("type", "set_guest_autoplay")
+                    put("active", active)
+                }
+            )
+        } catch (_: Exception) {
+        }
+    }
+
     fun loadUrl(url: String) {
         currentUrl = url
         session.loadUri(url)

@@ -8,11 +8,14 @@
 const port = browser.runtime.connectNative("streamsync_bridge");
 
 let shieldEnabled = true;
+let guestAutoPlayActive = false;
 
 port.onMessage.addListener((msg) => {
   if (!msg || typeof msg !== "object") return;
   if (msg.type === "set_shield") {
     shieldEnabled = Boolean(msg.enabled);
+  } else if (msg.type === "set_guest_autoplay") {
+    guestAutoPlayActive = Boolean(msg.active);
   }
 });
 
@@ -330,8 +333,12 @@ browser.webRequest.onHeadersReceived.addListener(
 );
 
 // Relay structured player data & DOM video metadata from content.js (all frames & iframes!)
-browser.runtime.onMessage.addListener((msg) => {
+browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || typeof msg !== "object") return;
+  if (msg.type === "query_guest_autoplay") {
+    sendResponse({ active: guestAutoPlayActive });
+    return true;
+  }
   if (msg.type === "structured_stream" || msg.type === "blocked_popup" || msg.type === "page_video_meta") {
     postToAndroid(msg);
   }

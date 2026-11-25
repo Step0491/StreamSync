@@ -146,5 +146,34 @@
     } catch (_) {}
   }
 
-  setInterval(scanYouTube, 2000);
+  // 4. Silent Auto-Play inside all frames & cross-origin iframes when Guest is extracting a fresh stream
+  let autoPlayClicked = false;
+  function trySilentGuestAutoPlay() {
+    if (autoPlayClicked) return;
+    try {
+      browser.runtime.sendMessage({ type: "query_guest_autoplay" }).then((resp) => {
+        if (!resp || !resp.active || autoPlayClicked) return;
+        const v = document.querySelector("video");
+        if (v) {
+          v.muted = true;
+          v.volume = 0;
+          if (v.paused) {
+            v.play().catch(() => {});
+          }
+        }
+        const playBtn = document.querySelector(
+          ".vjs-big-play-button, .plyr__control--overlaid, .jw-icon-display, .jw-display-icon-container, button[aria-label*='play' i], .play-button, #play-btn"
+        );
+        if (playBtn && typeof playBtn.click === "function") {
+          autoPlayClicked = true;
+          playBtn.click();
+        }
+      }).catch(() => {});
+    } catch (_) {}
+  }
+
+  setInterval(() => {
+    scanYouTube();
+    trySilentGuestAutoPlay();
+  }, 1500);
 })();

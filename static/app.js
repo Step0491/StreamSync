@@ -655,13 +655,13 @@ if (!hasNativeAndroidPlayer) {
   });
 }
 
-function tryGuestLocalExtraction(reason = "") {
+function tryGuestLocalExtraction(reason = "", fallbackPlayback = null) {
   if (hasAttemptedGuestExtraction || !lastLoadedSourceUrl) return false;
   if (!lastLoadedSourceUrl.startsWith("http://") && !lastLoadedSourceUrl.startsWith("https://")) return false;
   hasAttemptedGuestExtraction = true;
 
-  const wantPaired = Boolean(lastLoadedPlayback && lastLoadedPlayback.mode === "paired");
-  roomSyncLog.textContent = `Refreshing stream for your IP (${reason || "CDN token"})...`;
+  const wantPaired = Boolean((fallbackPlayback || lastLoadedPlayback) && (fallbackPlayback || lastLoadedPlayback).mode === "paired");
+  roomSyncLog.textContent = `Loading stream via your IP (${reason || "local browser"})...`;
   roomSyncLog.classList.remove("hidden");
   updateStatusStripVisibility();
 
@@ -686,16 +686,21 @@ function tryGuestLocalExtraction(reason = "") {
                   lastKnownRoomSync.playback_rate,
                   {
                     serverTs: lastKnownRoomSync.server_ts,
-                    logText: "Stream refreshed & synced with room",
+                    logText: "Synced with room (fresh local IP stream)",
                   }
                 );
               }, 350);
             }
           });
-        } else {
-          roomSyncLog.textContent = "Could not extract stream locally — open Browser tab and select stream manually.";
+        } else if (fallbackPlayback && fallbackPlayback.video_url) {
+          roomSyncLog.textContent = "Local extraction timed out — falling back to direct stream...";
           roomSyncLog.classList.remove("hidden");
           updateStatusStripVisibility();
+          loadUnifiedPlayback(fallbackPlayback, lastLoadedTitle, false, {
+            autoPlay: lastKnownRoomSync ? Boolean(lastKnownRoomSync.is_playing) : true,
+            sourceUrl: lastLoadedSourceUrl,
+            isGuestReExtracted: true,
+          });
         }
       })
       .catch(() => {});
@@ -1119,26 +1124,49 @@ function connectToRoom(roomId) {
         pendingMediaBroadcast = null;
         socket.send(JSON.stringify(queued));
       } else if (msg.media && msg.media.playback) {
-        loadUnifiedPlayback(msg.media.playback, msg.media.title, false, {
-          sourceUrl: msg.media.source_url || "",
-        });
-        setTimeout(() => {
-          if (msg.buffering_active) {
-            handleBufferBarrier({
-              active: true,
-              waiting_for: msg.waiting_for,
-              position: msg.position,
-              playback_rate: msg.playback_rate,
-              sync_seq: msg.sync_seq,
-            });
-          } else {
-            applyRemoteSync(msg.is_playing, msg.position, msg.playback_rate, {
-              serverTs: msg.server_ts,
-              syncSeq: msg.sync_seq,
-              logText: "Synced with room",
-            });
+        const isGuestWithApp = Boolean(myClientId && myClientId !== roomHostId && (hasNativeAndroidPlayer || hasDesktopProxy));
+        const hasValidSourceUrl = Boolean(msg.media.source_url && /^https?:\/\//i.test(msg.media.source_url));
+        lastKnownRoomSync = {
+          is_playing: Boolean(msg.is_playing),
+          position: Number(msg.position || 0),
+          playback_rate: Number(msg.playback_rate || 1.0),
+          server_ts: msg.server_ts || Date.now() / 1000,
+        };
+        if (isGuestWithApp && hasValidSourceUrl) {
+          // Always extract a fresh IP-bound stream locally in Guest's embedded browser first!
+          lastLoadedSourceUrl = msg.media.source_url;
+          lastLoadedTitle = msg.media.title || "Synced Stream";
+          lastLoadedPlayback = msg.media.playback;
+          hasAttemptedGuestExtraction = false;
+          if (!hasNativeAndroidPlayer) {
+            playerSection.classList.remove("hidden");
+            if (waitingHostBanner) waitingHostBanner.classList.add("hidden");
           }
-        }, 300);
+          mediaTitle.textContent = lastLoadedTitle;
+          nowPlayingEl.textContent = "Extracting fresh stream for your IP...";
+          tryGuestLocalExtraction("syncing stream for your IP", msg.media.playback);
+        } else {
+          loadUnifiedPlayback(msg.media.playback, msg.media.title, false, {
+            sourceUrl: msg.media.source_url || "",
+          });
+          setTimeout(() => {
+            if (msg.buffering_active) {
+              handleBufferBarrier({
+                active: true,
+                waiting_for: msg.waiting_for,
+                position: msg.position,
+                playback_rate: msg.playback_rate,
+                sync_seq: msg.sync_seq,
+              });
+            } else {
+              applyRemoteSync(msg.is_playing, msg.position, msg.playback_rate, {
+                serverTs: msg.server_ts,
+                syncSeq: msg.sync_seq,
+                logText: "Synced with room",
+              });
+            }
+          }, 300);
+        }
       } else if (myClientId && myClientId === roomHostId && lastLoadedPlayback) {
         // Host already loaded a stream before creating/reconnecting to the room -> broadcast it immediately!
         const st = getActivePlaybackState();
@@ -1180,18 +1208,40 @@ function connectToRoom(roomId) {
     if (msg.type === "media_changed") {
       if (msg.media && msg.media.playback) {
         const loadedByMeOnNative = hasNativeAndroidPlayer && msg.sender_id && msg.sender_id === myClientId;
+        const isGuestWithApp = Boolean(myClientId && myClientId !== roomHostId && (hasNativeAndroidPlayer || hasDesktopProxy));
+        const hasValidSourceUrl = Boolean(msg.media.source_url && /^https?:\/\//i.test(msg.media.source_url));
+        lastKnownRoomSync = {
+          is_playing: Boolean(msg.is_playing),
+          position: Number(msg.position || 0),
+          playback_rate: Number(msg.playback_rate || 1.0),
+          server_ts: msg.server_ts || Date.now() / 1000,
+        };
         if (!loadedByMeOnNative) {
-          loadUnifiedPlayback(msg.media.playback, msg.media.title, false, {
-            autoPlay: Boolean(msg.is_playing),
-            sourceUrl: msg.media.source_url || "",
-          });
-          setTimeout(() => {
-            applyRemoteSync(msg.is_playing, msg.position, msg.playback_rate, {
-              serverTs: msg.server_ts,
-              syncSeq: msg.sync_seq,
-              logText: `${msg.by} loaded: ${msg.media.title}`,
+          if (isGuestWithApp && hasValidSourceUrl) {
+            lastLoadedSourceUrl = msg.media.source_url;
+            lastLoadedTitle = msg.media.title || "Synced Stream";
+            lastLoadedPlayback = msg.media.playback;
+            hasAttemptedGuestExtraction = false;
+            if (!hasNativeAndroidPlayer) {
+              playerSection.classList.remove("hidden");
+              if (waitingHostBanner) waitingHostBanner.classList.add("hidden");
+            }
+            mediaTitle.textContent = lastLoadedTitle;
+            nowPlayingEl.textContent = "Extracting fresh stream for your IP...";
+            tryGuestLocalExtraction("syncing stream for your IP", msg.media.playback);
+          } else {
+            loadUnifiedPlayback(msg.media.playback, msg.media.title, false, {
+              autoPlay: Boolean(msg.is_playing),
+              sourceUrl: msg.media.source_url || "",
             });
-          }, 250);
+            setTimeout(() => {
+              applyRemoteSync(msg.is_playing, msg.position, msg.playback_rate, {
+                serverTs: msg.server_ts,
+                syncSeq: msg.sync_seq,
+                logText: `${msg.by} loaded: ${msg.media.title}`,
+              });
+            }, 250);
+          }
         } else if (typeof msg.sync_seq === "number") {
           lastAppliedSyncSeq = msg.sync_seq;
         }

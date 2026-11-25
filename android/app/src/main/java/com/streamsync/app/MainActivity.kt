@@ -463,6 +463,7 @@ class MainActivity : AppCompatActivity() {
         currentBrowserUrl = sourceUrl
         streamSniffer.clearForNewTopLevelPage(sourceUrl)
         adBlockEngine.resetPageCounter()
+        geckoBrowser.setGuestAutoPlayMode(true)
         geckoBrowser.loadUrl(sourceUrl)
 
         val handler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -488,6 +489,10 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 if (chosenVideo != null) {
+                    // Stop hidden GeckoView page immediately so there is ZERO background audio bleed
+                    geckoBrowser.setGuestAutoPlayMode(false)
+                    geckoBrowser.loadUrl("about:blank")
+
                     val mergedHeaders = LinkedHashMap<String, String>(chosenVideo.requestHeaders)
                     if (chosenAudio != null) {
                         for ((k, v) in chosenAudio.requestHeaders) {
@@ -527,6 +532,8 @@ class MainActivity : AppCompatActivity() {
 
                 if (System.currentTimeMillis() - startMs < 15_000L) {
                     handler.postDelayed(this, 500L)
+                } else {
+                    geckoBrowser.setGuestAutoPlayMode(false)
                 }
             }
         }
