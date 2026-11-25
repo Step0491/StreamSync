@@ -436,6 +436,36 @@ chatForm.addEventListener("submit", (e) => {
   chatInput.value = "";
 });
 
+function buildExtensionPlayback(videoUrl, audioUrl, title) {
+  const lowerVideo = videoUrl.toLowerCase();
+  const isHls = lowerVideo.includes(".m3u8");
+  const isDash = lowerVideo.includes(".mpd");
+  return {
+    title: title || "Detected Stream",
+    playback: {
+      mode: audioUrl ? "paired" : "single",
+      video_url: videoUrl,
+      audio_url: audioUrl || null,
+      is_hls: isHls,
+      is_dash: isDash,
+      label: audioUrl
+        ? "Unified Video + Audio"
+        : isHls
+          ? "HLS Stream"
+          : isDash
+            ? "DASH Stream"
+            : "Video Stream",
+    },
+  };
+}
+
+// Bridge for Android WebView app to inject detected streams without dropping the active WebSocket room
+window.loadFromNativeApp = (videoUrl, audioUrl, title) => {
+  if (!videoUrl) return;
+  const media = buildExtensionPlayback(videoUrl, audioUrl || "", title || "Detected Stream");
+  loadUnifiedPlayback(media.playback, media.title, true);
+};
+
 // Auto-join room and/or auto-load stream passed by the StreamSync Browser Extension (?video=...&audio=...&title=...&room=...)
 const startupParams = new URLSearchParams(window.location.search);
 const initialRoom = startupParams.get("room");
@@ -443,29 +473,9 @@ const initialVideo = startupParams.get("video");
 const initialAudio = startupParams.get("audio");
 const initialTitle = startupParams.get("title") || "Detected Stream";
 
-let pendingExtensionMedia = null;
-if (initialVideo) {
-  const lowerVideo = initialVideo.toLowerCase();
-  const isHls = lowerVideo.includes(".m3u8");
-  const isDash = lowerVideo.includes(".mpd");
-  pendingExtensionMedia = {
-    title: initialTitle,
-    playback: {
-      mode: initialAudio ? "paired" : "single",
-      video_url: initialVideo,
-      audio_url: initialAudio || null,
-      is_hls: isHls,
-      is_dash: isDash,
-      label: initialAudio
-        ? "Unified Video + Audio (from Extension)"
-        : isHls
-          ? "HLS Stream (from Extension)"
-          : isDash
-            ? "DASH Stream (from Extension)"
-            : "Video Stream (from Extension)",
-    },
-  };
-}
+let pendingExtensionMedia = initialVideo
+  ? buildExtensionPlayback(initialVideo, initialAudio || "", initialTitle)
+  : null;
 
 if (initialRoom) {
   roomCodeInput.value = initialRoom.toUpperCase();
