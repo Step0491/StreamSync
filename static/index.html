@@ -51,6 +51,25 @@
           <button id="extract-btn" type="submit">Load Stream</button>
         </form>
 
+        <details id="direct-pair-details" style="margin-top: 0.75rem;">
+          <summary class="details-summary" style="font-size: 0.84rem; color: var(--muted);">
+            Paste Direct Video + Audio URLs (Bypass Server Extractor / Cloudflare)
+          </summary>
+          <div class="pair-controls" style="border-bottom: none; padding-bottom: 0; margin-top: 0.6rem;">
+            <div class="pair-selects">
+              <label>
+                Direct Video URL (Combined or Video-Only)
+                <input id="direct-video-input" type="url" placeholder="https://.../video.mp4 or .m3u8" class="input-sm" style="width: 100%; padding: 0.5rem 0.7rem;" />
+              </label>
+              <label>
+                Direct Audio URL (Optional — for separated tracks)
+                <input id="direct-audio-input" type="url" placeholder="https://.../audio.m4a or .m3u8 (optional)" class="input-sm" style="width: 100%; padding: 0.5rem 0.7rem;" />
+              </label>
+            </div>
+            <button id="direct-play-btn" type="button" class="btn-secondary">Play Direct URL(s) in Room</button>
+          </div>
+        </details>
+
         <div id="status-box" class="status hidden" role="status"></div>
       </section>
 

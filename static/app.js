@@ -4,6 +4,9 @@
 const form = document.getElementById("extract-form");
 const urlInput = document.getElementById("url-input");
 const extractBtn = document.getElementById("extract-btn");
+const directVideoInput = document.getElementById("direct-video-input");
+const directAudioInput = document.getElementById("direct-audio-input");
+const directPlayBtn = document.getElementById("direct-play-btn");
 const statusBox = document.getElementById("status-box");
 
 const playerSection = document.getElementById("player-section");
@@ -1242,6 +1245,20 @@ document.querySelectorAll(".tab").forEach((tab) => {
     document.getElementById(`tab-${tab.dataset.tab}`).classList.remove("hidden");
   });
 });
+
+if (directPlayBtn) {
+  directPlayBtn.addEventListener("click", () => {
+    const vUrl = (directVideoInput.value || "").trim();
+    const aUrl = (directAudioInput.value || "").trim();
+    if (!vUrl) {
+      setStatus("Please paste at least a Video URL.", true);
+      return;
+    }
+    clearStatus();
+    const media = buildExtensionPlayback(vUrl, aUrl, aUrl ? "Direct Video + Audio" : "Direct Stream");
+    loadUnifiedPlayback(media.playback, media.title, true, { autoPlay: true });
+  });
+}
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();

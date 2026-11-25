@@ -83,13 +83,24 @@ class ExtractionResult(BaseModel):
 
 
 def detect_direct_media(url: str) -> tuple[str | None, str | None]:
-    """Return (kind, ext) if URL path ends with a known direct media extension."""
-    path = urlparse(url).path.lower()
+    """Return (kind, ext) if URL path or query hints indicate a direct media stream."""
+    parsed = urlparse(url)
+    path = parsed.path.lower()
     ext = Path(path).suffix
     if ext in DIRECT_VIDEO_EXTS:
         return ("video", ext.lstrip("."))
     if ext in DIRECT_AUDIO_EXTS:
         return ("audio", ext.lstrip("."))
+
+    lower_url = url.lower()
+    if "mime=audio" in lower_url or "type=audio" in lower_url:
+        return ("audio", "m4a" if "mp4" in lower_url or "m4a" in lower_url else "webm")
+    if "mime=video" in lower_url or "/videoplayback" in path:
+        return ("video", "mp4")
+    if "format=m3u8" in lower_url or "type=m3u8" in lower_url:
+        return ("video", "m3u8")
+    if "format=mpd" in lower_url or "type=mpd" in lower_url:
+        return ("video", "mpd")
     return (None, None)
 
 

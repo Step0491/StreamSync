@@ -14,7 +14,7 @@ const {
   friendlyCodec,
 } = require("./manifestParser");
 
-const CANDIDATE_URL_RE = /(\.(m3u8|mpd|mp4|webm|m4v|mov|m4a|mp3|aac|ogg|opus|flac)(\?|#|$)|\/videoplayback\b|mime=(video|audio)|format=(m3u8|mpd)|mpegurl|dash\+xml|(master|index|playlist)\.m3u8)/i;
+const CANDIDATE_URL_RE = /(\.(m3u8|mpd|mp4|webm|m4v|mov|m4a|mp3|aac|ogg|opus|flac)(\?|#|$)|\/videoplayback\b|mime=(video|audio)|format=(m3u8|mpd)|mpegurl|dash\+xml|(master|index|playlist)\.m3u8|\/hls\/|\/dash\/|\/stream\/|\/manifest)/i;
 const MEDIA_CT_RE = /(mpegurl|dash\+xml|^video\/|^audio\/|application\/mp4|application\/ogg)/i;
 const NON_MEDIA_CT_RE = /^(application\/json|text\/javascript|application\/javascript|application\/x-javascript|image\/|text\/css|font\/)/i;
 

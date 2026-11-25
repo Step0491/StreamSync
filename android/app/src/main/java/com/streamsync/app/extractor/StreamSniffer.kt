@@ -36,9 +36,9 @@ class StreamSniffer(
 
     val jsBridge = JsBridge()
 
-    // Strict media URL pattern (avoids false positives like manifest.json, /hls/hls.min.js, etc.)
+    // Media URL pattern (broad enough for CDN paths while nonMediaExtRegex filters out .json/.js/.css/images)
     private val candidateUrlRegex = Regex(
-        """(\.(m3u8|mpd|mp4|webm|m4v|mov|m4a|mp3|aac|ogg|opus|flac)(\?|#|$)|/videoplayback\b|mime=(video|audio)|format=(m3u8|mpd)|mpegurl|dash\+xml|(master|index|playlist)\.m3u8)""",
+        """(\.(m3u8|mpd|mp4|webm|m4v|mov|m4a|mp3|aac|ogg|opus|flac)(\?|#|$)|/videoplayback\b|mime=(video|audio)|format=(m3u8|mpd)|mpegurl|dash\+xml|(master|index|playlist)\.m3u8|/hls/|/dash/|/stream/|/manifest)""",
         RegexOption.IGNORE_CASE
     )
 
@@ -89,8 +89,10 @@ class StreamSniffer(
         val reqHeaders = request.requestHeaders ?: emptyMap()
         val accept = reqHeaders.entries.firstOrNull { it.key.equals("Accept", ignoreCase = true) }?.value.orEmpty()
         val secDest = reqHeaders.entries.firstOrNull { it.key.equals("Sec-Fetch-Dest", ignoreCase = true) }?.value.orEmpty()
+        val hasRangeHeader = reqHeaders.keys.any { it.equals("Range", ignoreCase = true) }
 
         val looksLikeMedia = candidateUrlRegex.containsMatchIn(rawUrl) ||
+            hasRangeHeader ||
             secDest.equals("video", ignoreCase = true) ||
             secDest.equals("audio", ignoreCase = true) ||
             accept.startsWith("video/", ignoreCase = true) ||
@@ -101,9 +103,14 @@ class StreamSniffer(
         if (!looksLikeMedia) return
 
         val capturedHeaders = buildPlaybackHeaders(rawUrl, pageUrl ?: activePageUrl, reqHeaders)
+        val kindHint = when {
+            secDest.equals("audio", ignoreCase = true) || accept.startsWith("audio/", ignoreCase = true) -> "audio/mp4"
+            secDest.equals("video", ignoreCase = true) || accept.startsWith("video/", ignoreCase = true) -> "video/mp4"
+            else -> ""
+        }
         submitCandidate(
             rawUrl = rawUrl,
-            contentTypeHint = "",
+            contentTypeHint = kindHint,
             headers = capturedHeaders,
             pageTitle = pageTitle ?: activePageTitle
         )

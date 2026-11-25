@@ -143,7 +143,7 @@ object BrowserShieldScripts {
                 };
               }
 
-              // Observe <video>, <audio>, <source>, and YouTube playerResponse streamingData
+              // Observe <video>, <audio>, <source>, PerformanceResourceTiming, and YouTube playerResponse
               let lastYtVideoId = '';
               function scanMediaElements() {
                 try {
@@ -153,6 +153,20 @@ object BrowserShieldScripts {
                     const src = el.currentSrc || el.src || el.getAttribute('src');
                     const type = el.getAttribute('type') || '';
                     if (src) reportCandidate(src, type, el.tagName.toLowerCase());
+                  }
+                } catch (_) {}
+
+                // Scan Chromium resource timing entries for video/audio initiators
+                try {
+                  if (performance && typeof performance.getEntriesByType === 'function') {
+                    const entries = performance.getEntriesByType('resource');
+                    for (let i = 0; i < entries.length; i++) {
+                      const e = entries[i];
+                      if (!e || !e.name) continue;
+                      if (e.initiatorType === 'video' || e.initiatorType === 'audio') {
+                        reportCandidate(e.name, e.initiatorType === 'audio' ? 'audio/mp4' : 'video/mp4', 'perf-' + e.initiatorType);
+                      }
+                    }
                   }
                 } catch (_) {}
 
