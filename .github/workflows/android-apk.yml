@@ -8,6 +8,9 @@ on:
       - '.github/workflows/android-apk.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -27,6 +30,8 @@ jobs:
 
       - name: Build Debug APK
         working-directory: android
+        env:
+          STREAMSYNC_BUILD_NUMBER: ${{ github.run_number }}
         run: gradle assembleDebug
 
       - name: Upload APK Artifact
@@ -34,3 +39,11 @@ jobs:
         with:
           name: streamsync-android-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish GitHub Release for In-App Updater
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-build-${{ github.run_number }}
+          name: StreamSync Android v0.1.${{ github.run_number }} (build ${{ github.run_number }})
+          body: Deterministic Android build #${{ github.run_number }}
+          files: android/app/build/outputs/apk/debug/app-debug.apk

@@ -3,6 +3,10 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val buildNumber: Int = (System.getenv("STREAMSYNC_BUILD_NUMBER")?.toIntOrNull()
+    ?: project.findProperty("buildNumber")?.toString()?.toIntOrNull()
+    ?: 1)
+
 android {
     namespace = "com.streamsync.app"
     compileSdk = 34
@@ -11,8 +15,12 @@ android {
         applicationId = "com.streamsync.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = buildNumber
+        versionName = "0.1.$buildNumber"
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     buildTypes {

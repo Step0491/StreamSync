@@ -1,8 +1,11 @@
 package com.streamsync.app
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.webkit.WebChromeClient
@@ -20,8 +23,13 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import org.json.JSONObject
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
 
@@ -31,10 +39,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnTabRoom: Button
     private lateinit var btnTabBrowser: Button
     private lateinit var btnStreams: Button
+    private lateinit var btnUpdate: Button
 
     private val detectedStreams = ConcurrentHashMap<String, DetectedStream>()
     private var showingRoom = true
     private var currentBrowserUrl = "https://www.google.com"
+    private val networkExecutor = Executors.newSingleThreadExecutor()
 
     private val prefs by lazy { getSharedPreferences("streamsync_prefs", MODE_PRIVATE) }
 
@@ -49,6 +59,7 @@ class MainActivity : AppCompatActivity() {
         btnTabRoom = findViewById(R.id.btnTabRoom)
         btnTabBrowser = findViewById(R.id.btnTabBrowser)
         btnStreams = findViewById(R.id.btnStreams)
+        btnUpdate = findViewById(R.id.btnUpdate)
         val btnGo: Button = findViewById(R.id.btnGo)
 
         val savedServer = prefs.getString("server_url", "https://streamsync.onrender.com")
@@ -64,6 +75,7 @@ class MainActivity : AppCompatActivity() {
         btnTabRoom.setOnClickListener { switchTab(showRoom = true) }
         btnTabBrowser.setOnClickListener { switchTab(showRoom = false) }
         btnStreams.setOnClickListener { showDetectedStreamsDialog() }
+        btnUpdate.setOnClickListener { checkForUpdates() }
 
         btnGo.setOnClickListener { navigateCurrentTab() }
         etUrl.setOnEditorActionListener { _, actionId, _ ->
@@ -268,5 +280,141 @@ class MainActivity : AppCompatActivity() {
                 .setNegativeButton("Close", null)
                 .show()
         }
+    }
+
+    private fun checkForUpdates() {
+        btnUpdate.isEnabled = false
+        btnUpdate.text = "Checking..."
+        val currentBuild = BuildConfig.VERSION_CODE
+        val currentVersion = BuildConfig.VERSION_NAME
+
+        networkExecutor.execute {
+            try {
+                val conn = (URL("https://api.github.com/repos/Step0491/StreamSync/releases/latest")
+                    .openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 10_000
+                    readTimeout = 10_000
+                    setRequestProperty("Accept", "application/vnd.github+json")
+                    setRequestProperty("User-Agent", "StreamSync-Android/$currentVersion")
+                }
+
+                val code = conn.responseCode
+                if (code != 200) {
+                    throw IllegalStateException("GitHub API returned HTTP $code")
+                }
+
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                val json = JSONObject(body)
+                val tagName = json.optString("tag_name", "")
+                val remoteBuild = Regex("""(\d+)$""").find(tagName)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                    ?: throw IllegalStateException("Invalid release tag: $tagName")
+
+                val assets = json.optJSONArray("assets")
+                var apkUrl: String? = null
+                if (assets != null) {
+                    for (i in 0 until assets.length()) {
+                        val asset = assets.getJSONObject(i)
+                        if (asset.optString("name").endsWith(".apk")) {
+                            apkUrl = asset.optString("browser_download_url")
+                            break
+                        }
+                    }
+                }
+
+                runOnUiThread {
+                    btnUpdate.isEnabled = true
+                    btnUpdate.text = "Update"
+                    if (remoteBuild <= currentBuild) {
+                        AlertDialog.Builder(this)
+                            .setTitle("App Up to Date")
+                            .setMessage("Installed: v$currentVersion (build $currentBuild)\nLatest release: build $remoteBuild")
+                            .setPositiveButton("OK", null)
+                            .show()
+                    } else if (apkUrl != null) {
+                        AlertDialog.Builder(this)
+                            .setTitle("Update Available")
+                            .setMessage("Installed: v$currentVersion (build $currentBuild)\nNew version: v0.1.$remoteBuild (build $remoteBuild)")
+                            .setPositiveButton("Download & Install") { _, _ ->
+                                downloadAndInstallApk(apkUrl, remoteBuild)
+                            }
+                            .setNegativeButton("Later", null)
+                            .show()
+                    } else {
+                        Toast.makeText(this, "New build $remoteBuild found, but no APK asset attached.", Toast.LENGTH_LONG).show()
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    btnUpdate.isEnabled = true
+                    btnUpdate.text = "Update"
+                    Toast.makeText(
+                        this,
+                        "Update check failed (v$currentVersion build $currentBuild): ${e.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+    }
+
+    private fun downloadAndInstallApk(apkUrl: String, remoteBuild: Int) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+            Toast.makeText(this, "Enable 'Install unknown apps' for StreamSync, then tap Update again.", Toast.LENGTH_LONG).show()
+            startActivity(
+                Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+            )
+            return
+        }
+
+        btnUpdate.isEnabled = false
+        btnUpdate.text = "Downloading..."
+        Toast.makeText(this, "Downloading build $remoteBuild...", Toast.LENGTH_SHORT).show()
+
+        networkExecutor.execute {
+            try {
+                val updatesDir = File(cacheDir, "updates").apply { mkdirs() }
+                val apkFile = File(updatesDir, "streamsync-build-$remoteBuild.apk")
+
+                val conn = (URL(apkUrl).openConnection() as HttpURLConnection).apply {
+                    instanceFollowRedirects = true
+                    connectTimeout = 15_000
+                    readTimeout = 30_000
+                }
+                conn.inputStream.use { input ->
+                    apkFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+
+                runOnUiThread {
+                    btnUpdate.isEnabled = true
+                    btnUpdate.text = "Update"
+                    installApkFile(apkFile)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    btnUpdate.isEnabled = true
+                    btnUpdate.text = "Update"
+                    Toast.makeText(this, "Download failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun installApkFile(apkFile: File) {
+        val apkUri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apkFile)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(apkUri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        networkExecutor.shutdownNow()
     }
 }
