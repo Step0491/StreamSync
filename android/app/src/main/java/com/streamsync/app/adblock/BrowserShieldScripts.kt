@@ -143,7 +143,8 @@ object BrowserShieldScripts {
                 };
               }
 
-              // Observe <video>, <audio>, and <source> elements in the DOM
+              // Observe <video>, <audio>, <source>, and YouTube playerResponse streamingData
+              let lastYtVideoId = '';
               function scanMediaElements() {
                 try {
                   const els = document.querySelectorAll('video, audio, source');
@@ -152,6 +153,69 @@ object BrowserShieldScripts {
                     const src = el.currentSrc || el.src || el.getAttribute('src');
                     const type = el.getAttribute('type') || '';
                     if (src) reportCandidate(src, type, el.tagName.toLowerCase());
+                  }
+                } catch (_) {}
+
+                // YouTube playerResponse extractor (bypasses SABR/UMP opaque binary chunks)
+                try {
+                  if (window.StreamSnifferBridge && window.StreamSnifferBridge.onStructuredStream) {
+                    const mp = document.getElementById('movie_player');
+                    const pr = (mp && typeof mp.getPlayerResponse === 'function' ? mp.getPlayerResponse() : null) || window.ytInitialPlayerResponse;
+                    const vidId = pr && pr.videoDetails && pr.videoDetails.videoId ? String(pr.videoDetails.videoId) : '';
+                    const sd = pr && pr.streamingData;
+                    if (sd && vidId && vidId !== lastYtVideoId) {
+                      lastYtVideoId = vidId;
+                      const all = [].concat(sd.formats || [], sd.adaptiveFormats || []);
+                      for (let i = 0; i < all.length; i++) {
+                        const f = all[i];
+                        if (!f || !f.url) continue;
+                        const mime = String(f.mimeType || '');
+                        const isVideo = mime.indexOf('video/') === 0;
+                        const isAudio = mime.indexOf('audio/') === 0;
+                        const hasBoth = Boolean(f.audioQuality) && Boolean(f.width || f.height);
+                        const kind = hasBoth ? 'COMBINED' : (isVideo ? 'VIDEO_ONLY' : (isAudio ? 'AUDIO_ONLY' : 'COMBINED'));
+                        const cm = mime.match(/codecs="([^"]+)"/i);
+                        const codecs = cm ? cm[1] : '';
+                        const ext = mime.indexOf('webm') >= 0 ? 'webm' : (isAudio ? 'm4a' : 'mp4');
+                        const res = f.qualityLabel || (f.height ? f.height + 'p' : '');
+                        const lang = (f.audioTrack && f.audioTrack.displayName) ? String(f.audioTrack.displayName) : '';
+                        const label = kind === 'AUDIO_ONLY'
+                          ? ('Audio ' + (lang ? lang + ' ' : '') + '(' + ext.toUpperCase() + ')')
+                          : ((res || 'Video') + ' • ' + (kind === 'VIDEO_ONLY' ? 'Video-Only' : 'Combined') + ' (' + ext.toUpperCase() + ')');
+                        const vcodec = isVideo ? codecs.split(',')[0].trim() : '';
+                        const acodec = isAudio ? codecs.split(',')[0].trim() : (hasBoth && codecs.indexOf(',') >= 0 ? codecs.split(',')[1].trim() : '');
+                        window.StreamSnifferBridge.onStructuredStream(
+                          String(f.url),
+                          kind,
+                          ext,
+                          label,
+                          Number(f.width || 0),
+                          Number(f.height || 0),
+                          Number(f.fps || 0),
+                          vcodec,
+                          acodec,
+                          f.bitrate ? Math.round(Number(f.bitrate) / 1000) : 0,
+                          Number(f.contentLength || 0),
+                          lang,
+                          false,
+                          false,
+                          String(location.href || ''),
+                          String(document.title || '')
+                        );
+                      }
+                      if (sd.hlsManifestUrl) {
+                        window.StreamSnifferBridge.onStructuredStream(
+                          String(sd.hlsManifestUrl), 'COMBINED', 'm3u8', 'HLS Master (YouTube)',
+                          0, 0, 0, '', '', 0, 0, '', true, false, String(location.href || ''), String(document.title || '')
+                        );
+                      }
+                      if (sd.dashManifestUrl) {
+                        window.StreamSnifferBridge.onStructuredStream(
+                          String(sd.dashManifestUrl), 'COMBINED', 'mpd', 'DASH Master (YouTube)',
+                          0, 0, 0, '', '', 0, 0, '', false, true, String(location.href || ''), String(document.title || '')
+                        );
+                      }
+                    }
                   }
                 } catch (_) {}
               }

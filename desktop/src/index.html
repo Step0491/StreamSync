@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StreamSync Desktop</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="chrome-bar">
+    <div class="tab-group">
+      <button id="btn-tab-room" class="chrome-btn active" type="button">Room</button>
+      <button id="btn-tab-browser" class="chrome-btn" type="button">Browser</button>
+    </div>
+
+    <div class="nav-group">
+      <button id="btn-back" class="icon-btn" type="button" title="Back">&#8592;</button>
+      <button id="btn-forward" class="icon-btn" type="button" title="Forward">&#8594;</button>
+      <button id="btn-reload" class="icon-btn" type="button" title="Reload">&#8635;</button>
+    </div>
+
+    <button id="btn-shield" class="shield-btn hidden" type="button" title="Toggle uBlock Ad &amp; Popup Shield for this site">
+      Shield: ON
+    </button>
+
+    <form id="url-form" class="url-box">
+      <input id="url-input" type="text" placeholder="https://streamsync-pj98.onrender.com/" spellcheck="false" />
+      <button type="submit" class="go-btn">Go</button>
+    </form>
+
+    <button id="btn-streams" class="streams-btn" type="button">Streams (0)</button>
+  </header>
+
+  <aside id="streams-drawer" class="drawer hidden">
+    <div class="drawer-header">
+      <div>
+        <h2 id="drawer-title">Detected Streams (0)</h2>
+        <span class="drawer-sub">uBlock-filtered • HLS / DASH / MP4 / XHR</span>
+      </div>
+      <div class="drawer-header-actions">
+        <button id="btn-extract-page" class="btn-sm btn-primary" type="button" title="Run backend yt-dlp extraction on current Browser URL">Extract Page</button>
+        <button id="btn-clear-streams" class="btn-sm btn-secondary" type="button">Clear</button>
+        <button id="btn-close-drawer" class="btn-sm btn-secondary" type="button">Close</button>
+      </div>
+    </div>
+
+    <div id="pair-hint" class="pair-hint hidden"></div>
+
+    <div class="drawer-tabs">
+      <button class="dtab active" data-tab="combined" type="button">Combined (<span id="cnt-combined">0</span>)</button>
+      <button class="dtab" data-tab="pair" type="button">Pair V + A</button>
+      <button class="dtab" data-tab="video" type="button">Video-Only (<span id="cnt-video">0</span>)</button>
+      <button class="dtab" data-tab="audio" type="button">Audio-Only (<span id="cnt-audio">0</span>)</button>
+    </div>
+
+    <div id="drawer-content" class="drawer-content"></div>
+  </aside>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

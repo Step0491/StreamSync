@@ -440,8 +440,35 @@ class MainActivity : AppCompatActivity() {
             },
             onClearStreams = {
                 streamSniffer.clearForNewTopLevelPage(currentBrowserUrl)
+            },
+            onExtractCurrentPage = {
+                extractCurrentBrowserPageInRoom()
             }
         )
+    }
+
+    private fun extractCurrentBrowserPageInRoom() {
+        val targetUrl = browserWebView.url ?: currentBrowserUrl
+        if (targetUrl.isBlank() || !targetUrl.startsWith("http")) {
+            Toast.makeText(this, "Open a video page in Browser first.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        switchTab(showRoom = true)
+        val quotedUrl = JSONObject.quote(targetUrl)
+        roomWebView.evaluateJavascript(
+            """
+            (function() {
+              const inp = document.getElementById('url-input');
+              const form = document.getElementById('extract-form');
+              if (inp && form) {
+                inp.value = $quotedUrl;
+                form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+              }
+            })();
+            """.trimIndent(),
+            null
+        )
+        Toast.makeText(this, "Extracting page via StreamSync Server...", Toast.LENGTH_SHORT).show()
     }
 
     private fun sendStreamSelectionToRoom(videoStream: DetectedStream, audioStream: DetectedStream?) {

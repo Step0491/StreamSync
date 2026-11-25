@@ -304,6 +304,16 @@ function loadUnifiedPlayback(playback, title = null, broadcast = false, options 
   const autoPlay = Boolean(options.autoPlay);
   const alreadyLoadedNative = Boolean(options.alreadyLoadedNative);
 
+  // If running inside StreamSync Electron Desktop, register Referer/Origin headers with Chromium session
+  if (
+    window.StreamSyncDesktop &&
+    typeof window.StreamSyncDesktop.registerStreamHeaders === "function" &&
+    playback.headers
+  ) {
+    const urls = [playback.video_url, playback.audio_url].filter(Boolean);
+    window.StreamSyncDesktop.registerStreamHeaders(urls, playback.headers).catch(() => {});
+  }
+
   resetWebPlayers();
   bufferBarrierBanner.classList.add("hidden");
   playerSection.classList.remove("hidden");

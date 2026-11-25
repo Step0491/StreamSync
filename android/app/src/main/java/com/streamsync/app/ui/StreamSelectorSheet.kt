@@ -42,17 +42,9 @@ object StreamSelectorSheet {
         context: Context,
         streams: List<DetectedStream>,
         onSelectPlayback: (video: DetectedStream, audio: DetectedStream?) -> Unit,
-        onClearStreams: () -> Unit
+        onClearStreams: () -> Unit,
+        onExtractCurrentPage: () -> Unit
     ) {
-        if (streams.isEmpty()) {
-            Toast.makeText(
-                context,
-                "No media streams detected yet. Open a video page in Browser and press Play.",
-                Toast.LENGTH_LONG
-            ).show()
-            return
-        }
-
         val combined = streams.filter { it.kind == StreamKind.COMBINED }
         val videoOnly = streams.filter { it.kind == StreamKind.VIDEO_ONLY }
         val audioOnly = streams.filter { it.kind == StreamKind.AUDIO_ONLY }
@@ -78,25 +70,35 @@ object StreamSelectorSheet {
             gravity = Gravity.CENTER_VERTICAL
         }
         val titleTv = TextView(context).apply {
-            text = "Detected Streams (${streams.size})"
+            text = "Streams (${streams.size})"
             setTextColor(Color.parseColor("#E6EDF7"))
             textSize = 16f
             setTypeface(typeface, Typeface.BOLD)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
-        val clearBtn = createActionButton(context, "Clear", "#1B2434", "#93A4BD", dp(10), dp(6)).apply {
+        val extractBtn = createActionButton(context, "Extract Page", "#6366F1", "#FFFFFF", dp(9), dp(6)).apply {
+            setOnClickListener {
+                dialog.dismiss()
+                onExtractCurrentPage()
+            }
+        }
+        val clearBtn = createActionButton(context, "Clear", "#1B2434", "#93A4BD", dp(9), dp(6)).apply {
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.marginStart = dp(6)
+            layoutParams = lp
             setOnClickListener {
                 onClearStreams()
                 dialog.dismiss()
             }
         }
-        val closeBtn = createActionButton(context, "Close", "#1B2434", "#E6EDF7", dp(10), dp(6)).apply {
+        val closeBtn = createActionButton(context, "Close", "#1B2434", "#E6EDF7", dp(9), dp(6)).apply {
             val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             lp.marginStart = dp(6)
             layoutParams = lp
             setOnClickListener { dialog.dismiss() }
         }
         headerRow.addView(titleTv)
+        headerRow.addView(extractBtn)
         headerRow.addView(clearBtn)
         headerRow.addView(closeBtn)
         root.addView(headerRow)

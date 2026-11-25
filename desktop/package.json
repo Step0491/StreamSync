@@ -1,0 +1,45 @@
+{
+  "name": "streamsync-desktop",
+  "version": "0.2.0",
+  "description": "StreamSync Desktop for Windows — uBlock-shielded Browser, Manifest Stream Extractor & Synchronized Watch-Party Rooms",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/manifestParser.test.js",
+    "build:win": "electron-builder --win portable --x64",
+    "build:win:dir": "electron-builder --win --dir --x64"
+  },
+  "dependencies": {
+    "@ghostery/adblocker-electron": "^2.20.3"
+  },
+  "devDependencies": {
+    "electron": "^45.5.0",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "com.streamsync.desktop",
+    "productName": "StreamSync",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png"
+    },
+    "portable": {
+      "artifactName": "StreamSync-Windows-x64.exe"
+    }
+  }
+}

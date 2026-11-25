@@ -1,0 +1,52 @@
+name: Build Windows Desktop EXE
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/windows-exe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install Dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Run Unit Tests
+        working-directory: desktop
+        run: npm test
+
+      - name: Build Portable Windows EXE
+        working-directory: desktop
+        run: npm run build:win
+
+      - name: Upload EXE Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamsync-windows-x64
+          path: desktop/dist/StreamSync-Windows-x64.exe
+          retention-days: 7
+
+      - name: Publish GitHub Release (Windows EXE)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-build-${{ github.run_number }}
+          name: StreamSync Windows v0.2.${{ github.run_number }} (build ${{ github.run_number }})
+          body: Standalone Windows x64 Portable EXE build #${{ github.run_number }}
+          files: desktop/dist/StreamSync-Windows-x64.exe

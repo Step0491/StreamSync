@@ -35,7 +35,7 @@ class StreamSniffer(
     val jsBridge = JsBridge()
 
     private val candidateUrlRegex = Regex(
-        """(\.(m3u8|mpd|mp4|webm|m4v|mov|m4a|mp3|aac|ogg|opus|flac)(\?|#|$)|mime=(video|audio)|mpegurl|dash\+xml|/manifest|/playlist\.m3u8)""",
+        """(\.(m3u8|mpd|mp4|webm|m4v|mov|m4a|mp3|aac|ogg|opus|flac)(\?|#|$)|/videoplayback\b|mime=(video|audio)|mpegurl|dash\+xml|/manifest|/playlist\.m3u8|/hls/|/dash/)""",
         RegexOption.IGNORE_CASE
     )
 
@@ -67,6 +67,8 @@ class StreamSniffer(
     fun inspectWebRequest(request: WebResourceRequest, pageUrl: String?, pageTitle: String?) {
         val rawUrl = request.url?.toString() ?: return
         if (ManifestParser.isSegmentOrNoiseUrl(rawUrl)) return
+        // Skip YouTube proprietary UMP/SABR chunks (not directly playable; extracted via ytInitialPlayerResponse)
+        if (Regex("""[?&]ump=1\b""", RegexOption.IGNORE_CASE).containsMatchIn(rawUrl)) return
 
         val reqHeaders = request.requestHeaders ?: emptyMap()
         val accept = reqHeaders.entries.firstOrNull { it.key.equals("Accept", ignoreCase = true) }?.value.orEmpty()
@@ -179,6 +181,7 @@ class StreamSniffer(
                 contentTypeHint.contains("dash+xml", ignoreCase = true) ||
                 cleanUrl.contains("manifest", ignoreCase = true)
 
+            val sentRange = !expectManifest
             conn = (URL(cleanUrl).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 instanceFollowRedirects = true
@@ -187,7 +190,7 @@ class StreamSniffer(
                 for ((k, v) in headers) {
                     setRequestProperty(k, v)
                 }
-                if (!expectManifest) {
+                if (sentRange) {
                     setRequestProperty("Range", "bytes=0-65535")
                 }
             }
@@ -217,7 +220,7 @@ class StreamSniffer(
             }
 
             val respCt = (conn.contentType ?: contentTypeHint).lowercase(Locale.ROOT)
-            val totalSize = extractTotalLength(conn)
+            val totalSize = extractReliableTotalLength(conn, sentRange)
 
             // Reject non-media HTML/JSON/image responses captured from ambiguous URLs
             if (respCt.startsWith("text/html") || respCt.startsWith("image/") || respCt.startsWith("text/css")) {
@@ -327,13 +330,15 @@ class StreamSniffer(
         }
     }
 
-    private fun extractTotalLength(conn: HttpURLConnection): Long? {
+    private fun extractReliableTotalLength(conn: HttpURLConnection, sentRange: Boolean): Long? {
         val contentRange = conn.getHeaderField("Content-Range")
         if (!contentRange.isNullOrBlank() && contentRange.contains('/')) {
             val totalStr = contentRange.substringAfter('/').trim()
             val parsed = totalStr.toLongOrNull()
             if (parsed != null && parsed > 0) return parsed
         }
+        // When we sent Range: bytes=0-65535 and server omits Content-Range, Content-Length is just the 64KB chunk!
+        if (sentRange) return null
         val len = conn.contentLengthLong
         return if (len > 0) len else null
     }
@@ -427,6 +432,63 @@ class StreamSniffer(
         @JavascriptInterface
         fun onBlockedPopup(@Suppress("UNUSED_PARAMETER") blockedUrl: String?) {
             onPopupBlockedByJs()
+        }
+
+        @JavascriptInterface
+        fun onStructuredStream(
+            url: String?,
+            kindStr: String?,
+            container: String?,
+            label: String?,
+            width: Int,
+            height: Int,
+            fps: Double,
+            vcodec: String?,
+            acodec: String?,
+            bitrateKbps: Int,
+            contentLength: Long,
+            language: String?,
+            isHls: Boolean,
+            isDash: Boolean,
+            pageUrl: String?,
+            pageTitle: String?
+        ) {
+            val raw = url?.trim() ?: return
+            if (!raw.startsWith("http://", ignoreCase = true) && !raw.startsWith("https://", ignoreCase = true)) {
+                return
+            }
+            val cleanUrl = ManifestParser.stripRangeQueryParams(raw)
+            val normKey = ManifestParser.normalizeUrlForKey(cleanUrl)
+            val kind = when (kindStr?.uppercase(Locale.ROOT)) {
+                "VIDEO_ONLY" -> StreamKind.VIDEO_ONLY
+                "AUDIO_ONLY" -> StreamKind.AUDIO_ONLY
+                else -> StreamKind.COMBINED
+            }
+            val effectivePage = pageUrl?.takeIf { it.isNotBlank() } ?: activePageUrl
+            val headers = buildPlaybackHeaders(cleanUrl, effectivePage, emptyMap())
+            streamsByKey[normKey] = DetectedStream(
+                id = normKey,
+                url = cleanUrl,
+                normalizedUrl = normKey,
+                kind = kind,
+                container = container?.takeIf { it.isNotBlank() } ?: ManifestParser.guessContainerExt(cleanUrl, null),
+                label = label?.takeIf { it.isNotBlank() } ?: "Detected Stream",
+                width = width.takeIf { it > 0 },
+                height = height.takeIf { it > 0 },
+                fps = fps.takeIf { it > 0.0 },
+                vcodec = vcodec?.takeIf { it.isNotBlank() },
+                acodec = acodec?.takeIf { it.isNotBlank() },
+                bitrateKbps = bitrateKbps.takeIf { it > 0 },
+                contentLength = contentLength.takeIf { it > 0L },
+                language = language?.takeIf { it.isNotBlank() },
+                isHls = isHls,
+                isDash = isDash,
+                isMasterPlaylist = isHls || isDash,
+                pageTitle = pageTitle?.takeIf { it.isNotBlank() } ?: activePageTitle,
+                requestHeaders = headers
+            )
+            inspectedKeys.add(normKey)
+            notifyUpdated()
         }
     }
 }
