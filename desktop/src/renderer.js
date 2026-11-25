@@ -120,6 +120,11 @@ function renderDrawer() {
     return;
   }
 
+  if (activeDrawerTab === "manual") {
+    renderManualTab();
+    return;
+  }
+
   const list =
     activeDrawerTab === "combined"
       ? combined
@@ -287,5 +292,67 @@ function renderPairTab(videos, audios) {
   });
 
   box.append(vLabel, aLabel, playBtn);
+  drawerContent.appendChild(box);
+}
+
+function renderManualTab() {
+  const box = document.createElement("div");
+  box.className = "pair-box";
+
+  const info = document.createElement("div");
+  info.className = "empty-msg";
+  info.style.padding = "0";
+  info.textContent = "Paste 1 Video URL + optional 1 Audio URL directly (bypasses yt-dlp / Cloudflare).";
+
+  const vLabel = document.createElement("label");
+  vLabel.textContent = "Video URL (Combined or Video-Only)";
+  const vInput = document.createElement("input");
+  vInput.type = "url";
+  vInput.placeholder = "https://.../video.mp4 or .m3u8";
+  vInput.style.cssText = "width:100%;padding:7px 9px;border-radius:7px;background:#0b0f17;color:#e6edf7;border:1px solid #283348;font-size:12px;";
+  vLabel.appendChild(vInput);
+
+  const aLabel = document.createElement("label");
+  aLabel.textContent = "Audio URL (Optional)";
+  const aInput = document.createElement("input");
+  aInput.type = "url";
+  aInput.placeholder = "https://.../audio.m4a or .m3u8";
+  aInput.style.cssText = "width:100%;padding:7px 9px;border-radius:7px;background:#0b0f17;color:#e6edf7;border:1px solid #283348;font-size:12px;";
+  aLabel.appendChild(aInput);
+
+  const playBtn = document.createElement("button");
+  playBtn.className = "btn-primary";
+  playBtn.textContent = "Play Direct URL(s) in Room";
+  playBtn.addEventListener("click", () => {
+    const vUrl = vInput.value.trim();
+    const aUrl = aInput.value.trim();
+    if (!/^https?:\/\//i.test(vUrl)) return;
+    const vLow = vUrl.toLowerCase();
+    const vStream = {
+      url: vUrl,
+      normalizedUrl: vUrl,
+      kind: aUrl ? "VIDEO_ONLY" : "COMBINED",
+      container: vLow.includes(".m3u8") ? "m3u8" : vLow.includes(".mpd") ? "mpd" : "mp4",
+      label: aUrl ? "Manual Video + Audio" : "Manual Direct Stream",
+      isHls: vLow.includes(".m3u8"),
+      isDash: vLow.includes(".mpd"),
+      requestHeaders: {},
+    };
+    const aStream = /^https?:\/\//i.test(aUrl)
+      ? {
+          url: aUrl,
+          normalizedUrl: aUrl,
+          kind: "AUDIO_ONLY",
+          container: aUrl.toLowerCase().includes(".m3u8") ? "m3u8" : "m4a",
+          label: "Manual Audio Track",
+          isHls: aUrl.toLowerCase().includes(".m3u8"),
+          isDash: aUrl.toLowerCase().includes(".mpd"),
+          requestHeaders: {},
+        }
+      : null;
+    window.StreamSyncShell.playInRoom(vStream, aStream);
+  });
+
+  box.append(info, vLabel, aLabel, playBtn);
   drawerContent.appendChild(box);
 }

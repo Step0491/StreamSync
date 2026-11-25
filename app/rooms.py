@@ -31,7 +31,7 @@ class RoomMember:
 class RoomState:
     room_id: str
     host_id: str | None = None
-    control_mode: str = "host_only"  # "host_only" | "everyone"
+    control_mode: str = "everyone"  # "everyone" (unlocked by default) | "host_only" (revocable by Host)
     media: dict[str, Any] | None = None
     is_playing: bool = False
     desired_playing: bool = False

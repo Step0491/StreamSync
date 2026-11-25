@@ -20,9 +20,9 @@ const NON_MEDIA_CT_RE = /^(application\/json|text\/javascript|application\/javas
 
 /**
  * CDP-powered (Chrome DevTools Protocol) media sniffer for Electron browserView.
- * Using webContents.debugger avoids any listener collision with @ghostery/adblocker-electron's
- * webRequest hooks, captures ALL cross-origin iframes, reads real Content-Type headers,
- * and can read HLS/DASH manifest bodies directly from Chromium memory via Network.getResponseBody.
+ * Uses Target.setAutoAttach (flatten: true) so Network.responseReceived & Network.getResponseBody
+ * capture EVERY cross-origin <iframe> (OOPIF) as well as the main page, with zero collision
+ * against @ghostery/adblocker-electron's webRequest hooks.
  */
 class DesktopStreamSniffer {
   constructor(onStreamsUpdated) {
@@ -43,22 +43,55 @@ class DesktopStreamSniffer {
       if (!webContents.debugger.isAttached()) {
         webContents.debugger.attach("1.3");
       }
-      webContents.debugger.sendCommand("Network.enable", {
+      const netOpts = {
         maxResourceBufferSize: 4 * 1024 * 1024,
         maxTotalBufferSize: 16 * 1024 * 1024,
-      }).catch(() => {});
+      };
+      webContents.debugger.sendCommand("Network.enable", netOpts).catch(() => {});
+
+      // CRITICAL: Auto-attach to all Out-Of-Process Iframes (OOPIFs) & workers so cross-origin
+      // video player iframes emit Network.responseReceived events!
+      webContents.debugger
+        .sendCommand("Target.setAutoAttach", {
+          autoAttach: true,
+          waitForDebuggerOnStart: false,
+          flatten: true,
+        })
+        .catch(() => {});
     } catch {
       return;
     }
 
-    webContents.debugger.on("message", (_event, method, params) => {
+    webContents.debugger.on("message", (_event, method, params, sessionId) => {
       try {
-        if (method === "Network.requestWillBeSent") {
-          this._onRequestWillBeSent(params);
+        if (method === "Target.attachedToTarget" && params && params.sessionId) {
+          webContents.debugger
+            .sendCommand(
+              "Network.enable",
+              {
+                maxResourceBufferSize: 4 * 1024 * 1024,
+                maxTotalBufferSize: 16 * 1024 * 1024,
+              },
+              params.sessionId
+            )
+            .catch(() => {});
+          webContents.debugger
+            .sendCommand(
+              "Target.setAutoAttach",
+              {
+                autoAttach: true,
+                waitForDebuggerOnStart: false,
+                flatten: true,
+              },
+              params.sessionId
+            )
+            .catch(() => {});
+        } else if (method === "Network.requestWillBeSent") {
+          this._onRequestWillBeSent(params, sessionId || "");
         } else if (method === "Network.responseReceived") {
-          this._onResponseReceived(params);
+          this._onResponseReceived(params, sessionId || "");
         } else if (method === "Network.loadingFinished") {
-          this._onLoadingFinished(params);
+          this._onLoadingFinished(params, sessionId || "");
         }
       } catch {
         // Never disrupt browser navigation
@@ -66,28 +99,35 @@ class DesktopStreamSniffer {
     });
   }
 
-  _onRequestWillBeSent(params) {
+  _reqKey(sessionId, requestId) {
+    return `${sessionId || "root"}:${requestId}`;
+  }
+
+  _onRequestWillBeSent(params, sessionId) {
     const reqId = params.requestId;
     const req = params.request;
     if (!reqId || !req || !req.url) return;
 
     const picked = {};
+    let hasRange = false;
     if (req.headers) {
       for (const [k, v] of Object.entries(req.headers)) {
         const low = k.toLowerCase();
+        if (low === "range") hasRange = true;
         if ((low === "referer" || low === "origin" || low === "user-agent" || low === "cookie") && v) {
           picked[k] = String(v);
         }
       }
     }
-    this.requestHeadersById.set(reqId, { url: req.url, headers: picked });
-    if (this.requestHeadersById.size > 600) {
+    const key = this._reqKey(sessionId, reqId);
+    this.requestHeadersById.set(key, { url: req.url, headers: picked, hasRange });
+    if (this.requestHeadersById.size > 800) {
       const firstKey = this.requestHeadersById.keys().next().value;
       this.requestHeadersById.delete(firstKey);
     }
   }
 
-  _onResponseReceived(params) {
+  _onResponseReceived(params, sessionId) {
     const reqId = params.requestId;
     const resp = params.response;
     if (!resp || !resp.url) return;
@@ -101,14 +141,16 @@ class DesktopStreamSniffer {
     const cr = this._getHeader(respHeaders, "content-range");
     const cl = this._getHeader(respHeaders, "content-length");
 
-    // Ignore YouTube UMP/SABR proprietary binary chunks and strictly non-media MIME types (JSON, JS, images)
     if (ct.includes("vnd.yt-ump") || /[?&]ump=1\b/i.test(url)) return;
     if (NON_MEDIA_CT_RE.test(ct)) return;
 
-    const isMedia = MEDIA_CT_RE.test(ct) || CANDIDATE_URL_RE.test(url);
+    const reqKey = this._reqKey(sessionId, reqId);
+    const cachedReq = this.requestHeadersById.get(reqKey);
+    const hasRange = Boolean(cachedReq && cachedReq.hasRange) || Boolean(cr);
+
+    const isMedia = MEDIA_CT_RE.test(ct) || CANDIDATE_URL_RE.test(url) || (hasRange && !ct.startsWith("text/html"));
     if (!isMedia) return;
 
-    const cachedReq = this.requestHeadersById.get(reqId);
     const headers = { ...(cachedReq ? cachedReq.headers : {}) };
     if (!this._hasHeaderKey(headers, "referer") && this.activePageUrl) {
       headers.Referer = this.activePageUrl;
@@ -124,41 +166,49 @@ class DesktopStreamSniffer {
       ct.includes("dash+xml");
 
     if (isManifest) {
-      // Queue for zero-overhead CDP Network.getResponseBody once loadingFinished fires
-      this.pendingManifestRequests.set(reqId, { cleanUrl, normKey, ct, headers });
+      this.pendingManifestRequests.set(reqKey, {
+        requestId: reqId,
+        sessionId,
+        cleanUrl,
+        normKey,
+        ct,
+        headers,
+      });
     }
 
-    // Only treat Content-Length as true total size when NOT a ranged request
     const wasRangeRequest = /[?&](range|bytestart)=/i.test(url) || Boolean(cr);
     const knownTotalSize = this._extractReliableTotalBytes(cr, cl, wasRangeRequest);
 
     this.submitCandidate(cleanUrl, ct, headers, knownTotalSize, isManifest);
   }
 
-  async _onLoadingFinished(params) {
-    const reqId = params.requestId;
-    const pending = this.pendingManifestRequests.get(reqId);
+  async _onLoadingFinished(params, sessionId) {
+    const reqKey = this._reqKey(sessionId, params.requestId);
+    const pending = this.pendingManifestRequests.get(reqKey);
     if (!pending) return;
-    this.pendingManifestRequests.delete(reqId);
+    this.pendingManifestRequests.delete(reqKey);
 
     if (!this.webContents || this.webContents.isDestroyed()) return;
     try {
-      const bodyResp = await this.webContents.debugger.sendCommand("Network.getResponseBody", {
-        requestId: reqId,
-      });
+      const bodyResp = pending.sessionId
+        ? await this.webContents.debugger.sendCommand(
+            "Network.getResponseBody",
+            { requestId: pending.requestId },
+            pending.sessionId
+          )
+        : await this.webContents.debugger.sendCommand("Network.getResponseBody", {
+            requestId: pending.requestId,
+          });
       if (!bodyResp || !bodyResp.body) return;
       const text = bodyResp.base64Encoded
         ? Buffer.from(bodyResp.body, "base64").toString("utf8")
         : String(bodyResp.body);
       this._ingestManifestText(pending.cleanUrl, pending.normKey, pending.ct, pending.headers, text);
     } catch {
-      // Fallback probe in submitCandidate will still run if needed
+      // Fallback probe / optimistic entry remains available
     }
   }
 
-  /**
-   * Ingests structured streams extracted directly from page JS players (e.g. YouTube ytInitialPlayerResponse).
-   */
   ingestStructuredStreams(items, pageUrl, pageTitle) {
     if (!Array.isArray(items) || items.length === 0) return;
     let changed = false;
@@ -176,6 +226,8 @@ class DesktopStreamSniffer {
         width: item.width || null,
         height: item.height || null,
         fps: item.fps || null,
+        durationSec: item.durationSec || null,
+        isLive: Boolean(item.isLive),
         vcodec: item.vcodec || null,
         acodec: item.acodec || null,
         bitrateKbps: item.bitrateKbps || null,
@@ -250,7 +302,39 @@ class DesktopStreamSniffer {
       lowerCt.includes("dash+xml") ||
       /\/manifest/i.test(cleanUrl);
 
-    if (!isLikelyManifest) {
+    // Always add an immediate optimistic entry (including HLS/DASH!) so Cloudflare-protected
+    // streams never disappear if background fetch fails.
+    if (isLikelyManifest) {
+      const entry = {
+        id: normKey,
+        url: cleanUrl,
+        normalizedUrl: normKey,
+        kind: StreamKind.COMBINED,
+        container: ext === "mpd" ? "mpd" : "m3u8",
+        label: ext === "mpd" ? "DASH Stream (.mpd)" : "HLS Stream (.m3u8)",
+        width: null,
+        height: null,
+        fps: null,
+        durationSec: null,
+        isLive: false,
+        vcodec: null,
+        acodec: null,
+        bitrateKbps: null,
+        contentLength: null,
+        language: null,
+        isHls: ext !== "mpd",
+        isDash: ext === "mpd",
+        isMasterPlaylist: false,
+        isDrmProtected: false,
+        parentManifestUrl: null,
+        pageTitle: this.activePageTitle,
+        requestHeaders: headers,
+        detectedAtMs: Date.now(),
+      };
+      entry.subtitle = formatMetadataSubtitle(entry);
+      this.streamsByKey.set(normKey, entry);
+      this._emit();
+    } else {
       if (knownTotalSize && knownTotalSize > 0 && knownTotalSize < 120000) {
         return;
       }
@@ -270,6 +354,8 @@ class DesktopStreamSniffer {
         width: null,
         height: null,
         fps: null,
+        durationSec: null,
+        isLive: false,
         vcodec: null,
         acodec: null,
         bitrateKbps: null,
@@ -294,14 +380,39 @@ class DesktopStreamSniffer {
 
   _ingestManifestText(cleanUrl, normKey, respCt, headers, textSample) {
     if (textSample.replace(/^\uFEFF/, "").trimStart().startsWith("#EXTM3U")) {
-      if (this.childOverrides.has(normKey)) {
-        const ov = this.childOverrides.get(normKey);
-        this.streamsByKey.set(normKey, { ...ov, requestHeaders: { ...ov.requestHeaders, ...headers } });
-        this._emit();
-        return true;
-      }
+      const existingOverride = this.childOverrides.get(normKey);
       const parsed = parseHlsManifest(cleanUrl, textSample, headers, this.activePageTitle);
       if (parsed) {
+        if (existingOverride && parsed.streams.length === 1 && !parsed.streams[0].isMasterPlaylist) {
+          const childDur = parsed.streams[0].durationSec;
+          const childLive = parsed.streams[0].isLive;
+          const upgraded = {
+            ...existingOverride,
+            durationSec: childDur || existingOverride.durationSec,
+            isLive: Boolean(childLive || existingOverride.isLive),
+            requestHeaders: { ...existingOverride.requestHeaders, ...headers },
+          };
+          upgraded.subtitle = formatMetadataSubtitle(upgraded);
+          this.childOverrides.set(normKey, upgraded);
+          this.streamsByKey.set(normKey, upgraded);
+
+          if (upgraded.parentManifestUrl && (childDur || childLive)) {
+            for (const [k, s] of this.streamsByKey.entries()) {
+              if (s.normalizedUrl === upgraded.parentManifestUrl || s.parentManifestUrl === upgraded.parentManifestUrl) {
+                const updatedSibling = {
+                  ...s,
+                  durationSec: s.durationSec || childDur,
+                  isLive: Boolean(s.isLive || childLive),
+                };
+                updatedSibling.subtitle = formatMetadataSubtitle(updatedSibling);
+                this.streamsByKey.set(k, updatedSibling);
+              }
+            }
+          }
+          this._emit();
+          return true;
+        }
+
         for (const [ck, cs] of parsed.childOverrides.entries()) {
           this.childOverrides.set(ck, cs);
           if (this.streamsByKey.has(ck)) this.streamsByKey.set(ck, cs);
@@ -344,30 +455,7 @@ class DesktopStreamSniffer {
         signal: controller.signal,
       });
 
-      if (!resp.ok) {
-        if (expectManifest && !this.streamsByKey.has(normKey)) {
-          const ext = guessContainerExt(cleanUrl, contentTypeHint);
-          const fallback = {
-            id: normKey,
-            url: cleanUrl,
-            normalizedUrl: normKey,
-            kind: StreamKind.COMBINED,
-            container: ext,
-            label: ext === "mpd" ? "DASH Stream (.mpd)" : "HLS Stream (.m3u8)",
-            isHls: ext === "m3u8",
-            isDash: ext === "mpd",
-            isMasterPlaylist: false,
-            isDrmProtected: false,
-            pageTitle: this.activePageTitle,
-            requestHeaders: headers,
-            detectedAtMs: Date.now(),
-          };
-          fallback.subtitle = formatMetadataSubtitle(fallback);
-          this.streamsByKey.set(normKey, fallback);
-          this._emit();
-        }
-        return;
-      }
+      if (!resp.ok) return;
 
       const respCt = (resp.headers.get("content-type") || contentTypeHint || "").toLowerCase();
       const hasExplicitExt = /\.(m3u8|mpd|mp4|webm|m4v|mov|m4a|mp3|aac|ogg|opus|flac)(\?|#|$)|mime=(video|audio)|\/videoplayback\b/i.test(cleanUrl);
@@ -403,7 +491,6 @@ class DesktopStreamSniffer {
         return;
       }
 
-      // Only drop confirmed-small files (< 120 KB total), never 64 KB Range chunks!
       if (reliableTotalSize && reliableTotalSize > 0 && reliableTotalSize < 120000) {
         this.streamsByKey.delete(normKey);
         this._emit();
@@ -430,6 +517,8 @@ class DesktopStreamSniffer {
         width: null,
         height: null,
         fps: null,
+        durationSec: null,
+        isLive: false,
         vcodec: probe.vcodec,
         acodec: probe.acodec,
         bitrateKbps: null,
@@ -494,8 +583,6 @@ class DesktopStreamSniffer {
       const total = parseInt(contentRange.split("/")[1], 10);
       if (Number.isFinite(total) && total > 0) return total;
     }
-    // If we requested a small byte range and the server returned Content-Length without Content-Range,
-    // that Content-Length is just the chunk size (~64KB), NOT the full media file size!
     if (wasRangeRequest) return null;
     const len = parseInt(contentLength, 10);
     return Number.isFinite(len) && len > 0 ? len : null;

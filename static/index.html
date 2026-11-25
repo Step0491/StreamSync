@@ -33,7 +33,7 @@
 
   <main class="layout">
     <div class="main-col">
-      <section class="card">
+      <section id="extract-card" class="card">
         <h1>Load Public Stream</h1>
         <p class="subtitle">
           Paste a public, non-DRM streaming page or direct media URL (<code>.mp4</code>, <code>.m3u8</code>, <code>.mpd</code>),
@@ -88,6 +88,9 @@
         </div>
 
         <div id="buffer-barrier-banner" class="buffer-banner hidden" role="status"></div>
+        <div id="waiting-host-banner" class="waiting-host-banner hidden" role="status">
+          Waiting for Room Host to start a synchronized stream...
+        </div>
         <div id="native-bridge-note" class="native-player-note hidden">
           Streaming via Native Android ExoPlayer (Hardware-Locked Video + Audio Sync)
         </div>
@@ -145,8 +148,8 @@
       </div>
 
       <div class="room-control-row">
-        <span id="control-mode-label" class="pill">Controls: Host Only</span>
-        <button id="toggle-control-mode-btn" type="button" class="btn-sm btn-secondary hidden">Allow Everyone</button>
+        <span id="control-mode-label" class="pill">Controls: Everyone</span>
+        <button id="toggle-control-mode-btn" type="button" class="btn-sm btn-secondary hidden">Lock to Host Only</button>
       </div>
 
       <div id="member-list" class="member-list"></div>

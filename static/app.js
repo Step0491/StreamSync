@@ -9,6 +9,7 @@ const directAudioInput = document.getElementById("direct-audio-input");
 const directPlayBtn = document.getElementById("direct-play-btn");
 const statusBox = document.getElementById("status-box");
 
+const extractCard = document.getElementById("extract-card");
 const playerSection = document.getElementById("player-section");
 const tracksSection = document.getElementById("tracks-section");
 const mediaTitle = document.getElementById("media-title");
@@ -19,6 +20,7 @@ const nowPlayingEl = document.getElementById("now-playing");
 const syncIndicator = document.getElementById("sync-indicator");
 const roomSyncLog = document.getElementById("room-sync-log");
 const bufferBarrierBanner = document.getElementById("buffer-barrier-banner");
+const waitingHostBanner = document.getElementById("waiting-host-banner");
 const nativeBridgeNote = document.getElementById("native-bridge-note");
 
 const videoEl = document.getElementById("video-player");
@@ -74,13 +76,15 @@ let videoBuffering = false;
 let audioBuffering = false;
 let pausedByBarrier = false;
 let currentData = null;
+let lastLoadedPlayback = null;
+let lastLoadedTitle = "";
 
 // Room WebSocket & Clock Sync state
 let ws = null;
 let currentRoomId = null;
 let myClientId = null;
 let roomHostId = null;
-let roomControlMode = "host_only";
+let roomControlMode = "everyone";
 let lastAppliedSyncSeq = -1;
 let suppressRoomSync = false;
 let suppressTimer = null;
@@ -317,8 +321,12 @@ function loadUnifiedPlayback(playback, title = null, broadcast = false, options 
     window.StreamSyncDesktop.registerStreamHeaders(urls, playback.headers).catch(() => {});
   }
 
+  lastLoadedPlayback = playback;
+  lastLoadedTitle = title || mediaTitle.textContent || "Untitled Stream";
+
   resetWebPlayers();
   bufferBarrierBanner.classList.add("hidden");
+  if (waitingHostBanner) waitingHostBanner.classList.add("hidden");
   playerSection.classList.remove("hidden");
   if (title) mediaTitle.textContent = title;
 
@@ -651,13 +659,30 @@ function handleBufferBarrier(msg) {
 }
 
 function updateRoomPermissionsUI() {
+  const inRoom = Boolean(currentRoomId);
   const isHost = Boolean(myClientId && myClientId === roomHostId);
-  const modeText = roomControlMode === "host_only" ? "Controls: Host Only" : "Controls: Everyone";
+  const isGuest = inRoom && Boolean(myClientId) && !isHost;
+
+  // Hide the URL extractor bar when joining another Host's room; always show the streaming window!
+  if (extractCard) {
+    extractCard.classList.toggle("hidden", isGuest);
+  }
+  if (isGuest) {
+    tracksSection.classList.add("hidden");
+    playerSection.classList.remove("hidden");
+    if (waitingHostBanner) {
+      waitingHostBanner.classList.toggle("hidden", Boolean(lastLoadedPlayback));
+    }
+  } else if (waitingHostBanner && !inRoom) {
+    waitingHostBanner.classList.add("hidden");
+  }
+
+  const modeText = roomControlMode === "host_only" ? "🔒 Controls: Host Only" : "🔓 Controls: Everyone";
   controlModeLabel.textContent = modeText;
   toggleControlModeBtn.classList.toggle("hidden", !isHost);
   if (isHost) {
     toggleControlModeBtn.textContent =
-      roomControlMode === "host_only" ? "Allow Everyone" : "Set Host Only";
+      roomControlMode === "host_only" ? "Unlock for All" : "Lock to Host Only";
   }
 }
 
@@ -755,6 +780,8 @@ function setRoomUI(roomId) {
     roomHostId = null;
     lastAppliedSyncSeq = -1;
     bufferBarrierBanner.classList.add("hidden");
+    if (extractCard) extractCard.classList.remove("hidden");
+    if (waitingHostBanner) waitingHostBanner.classList.add("hidden");
   }
 
   const url = new URL(window.location.href);
@@ -804,13 +831,12 @@ function connectToRoom(roomId) {
     if (msg.type === "room_state") {
       myClientId = msg.client_id || null;
       roomHostId = msg.host_id || null;
-      roomControlMode = msg.control_mode || "host_only";
+      roomControlMode = msg.control_mode || "everyone";
       lastAppliedSyncSeq = typeof msg.sync_seq === "number" ? msg.sync_seq : 0;
       if (typeof msg.server_ts === "number" && !hasClockSample) {
         serverClockOffsetSec = msg.server_ts - Date.now() / 1000;
       }
 
-      updateRoomPermissionsUI();
       renderMembers(msg.members || []);
       (msg.chat_history || []).forEach((c) => appendChat(c.nickname, c.text));
 
@@ -833,7 +859,25 @@ function connectToRoom(roomId) {
             });
           }
         }, 300);
+      } else if (myClientId && myClientId === roomHostId && lastLoadedPlayback) {
+        // Host already loaded a stream before creating the room -> broadcast it immediately!
+        const st = getActivePlaybackState();
+        ws.send(
+          JSON.stringify({
+            type: "load_media",
+            auto_play: st.isPlaying,
+            media: {
+              title: lastLoadedTitle || "Untitled Stream",
+              source_url: currentData ? currentData.source_url : "",
+              playback: lastLoadedPlayback,
+            },
+          })
+        );
+        if (st.position > 0.5) {
+          setTimeout(() => emitRoomSync(st.isPlaying ? "play" : "pause"), 150);
+        }
       }
+      updateRoomPermissionsUI();
       return;
     }
 

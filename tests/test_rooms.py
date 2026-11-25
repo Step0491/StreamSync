@@ -17,7 +17,7 @@ def test_create_room_and_summary():
     assert summary.status_code == 200
     assert summary.json()["room_id"] == room_id
     assert summary.json()["member_count"] == 0
-    assert summary.json()["control_mode"] == "host_only"
+    assert summary.json()["control_mode"] == "everyone"
 
 
 def test_websocket_room_sync_media_and_chat():
@@ -30,7 +30,7 @@ def test_websocket_room_sync_media_and_chat():
         state1 = ws1.receive_json()
         assert state1["type"] == "room_state"
         assert state1["host_id"] == state1["client_id"]
-        assert state1["control_mode"] == "host_only"
+        assert state1["control_mode"] == "everyone"
 
         # Alice receives notification that Bob joined
         joined_evt = ws1.receive_json()
@@ -99,24 +99,24 @@ def test_host_only_permissions_and_control_mode_toggle():
         ws_host.receive_json()  # members_updated
         ws_guest.receive_json()  # room_state
 
-        # GuestBob tries to sync while host_only is active -> receives sync_denied
-        ws_guest.send_json({"type": "sync", "action": "play", "is_playing": True, "position": 10.0})
-        denied = ws_guest.receive_json()
-        assert denied["type"] == "sync_denied"
-
-        # HostAlice enables collaborative mode ("everyone")
-        ws_host.send_json({"type": "set_control_mode", "control_mode": "everyone"})
-        cm1 = ws_host.receive_json()
-        cm2 = ws_guest.receive_json()
-        assert cm1["type"] == "control_mode_changed"
-        assert cm2["control_mode"] == "everyone"
-
-        # Now GuestBob can sync playback for the room
+        # By default ("everyone"), GuestBob can control playback
         ws_guest.send_json({"type": "sync", "action": "seek", "is_playing": True, "position": 88.0})
         sync_to_host = ws_host.receive_json()
         assert sync_to_host["type"] == "sync"
         assert sync_to_host["position"] == 88.0
         assert sync_to_host["by"] == "GuestBob"
+
+        # HostAlice revokes guest controls -> switches to "host_only"
+        ws_host.send_json({"type": "set_control_mode", "control_mode": "host_only"})
+        cm1 = ws_host.receive_json()
+        cm2 = ws_guest.receive_json()
+        assert cm1["type"] == "control_mode_changed"
+        assert cm2["control_mode"] == "host_only"
+
+        # Now GuestBob's sync attempt is rejected with sync_denied
+        ws_guest.send_json({"type": "sync", "action": "play", "is_playing": True, "position": 10.0})
+        denied = ws_guest.receive_json()
+        assert denied["type"] == "sync_denied"
 
 
 def test_pause_for_all_buffering_barrier_and_auto_resume():
