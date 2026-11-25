@@ -12,39 +12,61 @@
         android:background="#131A26"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:padding="8dp">
+        android:padding="6dp">
 
         <Button
             android:id="@+id/btnTabRoom"
             android:layout_width="0dp"
-            android:layout_height="40dp"
-            android:layout_marginEnd="6dp"
+            android:layout_height="38dp"
+            android:layout_marginEnd="4dp"
             android:layout_weight="1"
+            android:maxLines="1"
+            android:minWidth="0dp"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp"
             android:text="Room"
-            android:textSize="13sp" />
+            android:textAllCaps="false"
+            android:textSize="12sp" />
 
         <Button
             android:id="@+id/btnTabBrowser"
             android:layout_width="0dp"
-            android:layout_height="40dp"
-            android:layout_marginEnd="6dp"
-            android:layout_weight="1"
+            android:layout_height="38dp"
+            android:layout_marginEnd="4dp"
+            android:layout_weight="1.15"
+            android:maxLines="1"
+            android:minWidth="0dp"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp"
             android:text="Browser"
-            android:textSize="13sp" />
+            android:textAllCaps="false"
+            android:textSize="12sp" />
 
         <Button
             android:id="@+id/btnStreams"
-            android:layout_width="wrap_content"
-            android:layout_height="40dp"
-            android:layout_marginEnd="6dp"
+            android:layout_width="0dp"
+            android:layout_height="38dp"
+            android:layout_marginEnd="4dp"
+            android:layout_weight="1.35"
+            android:maxLines="1"
+            android:minWidth="0dp"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp"
             android:text="Streams (0)"
+            android:textAllCaps="false"
             android:textSize="12sp" />
 
         <Button
             android:id="@+id/btnUpdate"
-            android:layout_width="wrap_content"
-            android:layout_height="40dp"
+            android:layout_width="0dp"
+            android:layout_height="38dp"
+            android:layout_weight="1"
+            android:maxLines="1"
+            android:minWidth="0dp"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp"
             android:text="Update"
+            android:textAllCaps="false"
             android:textSize="12sp" />
     </LinearLayout>
 
