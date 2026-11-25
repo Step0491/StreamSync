@@ -1,26 +1,77 @@
-"""FastAPI application for StreamSync (Step 1: Extractor + Step 2: Watch Rooms)."""
+"""FastAPI application for StreamSync (Extractor, Watch Rooms, and SSRF-safe Media CORS/Referer Proxy)."""
 
+from __future__ import annotations
+
+import re
 from pathlib import Path
+from typing import AsyncIterator
+from urllib.parse import quote, urljoin
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+import httpx
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.extractor import DRMProtectedError, ExtractionError, ExtractionResult, extract_media
 from app.rooms import RoomManager
-from app.security import UnsafeURLError
+from app.security import UnsafeURLError, validate_public_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 
-app = FastAPI(title="StreamSync", version="0.2.0")
+app = FastAPI(title="StreamSync", version="0.3.0")
 room_manager = RoomManager()
+
+_HLS_URI_ATTR_RE = re.compile(r'(URI=")([^"]+)(")', re.IGNORECASE)
+_MAX_MANIFEST_PROXY_BYTES = 4 * 1024 * 1024
 
 
 class ExtractRequest(BaseModel):
     url: str
+
+
+def _build_proxy_url(
+    target_url: str,
+    referer: str | None = None,
+    origin: str | None = None,
+    ua: str | None = None,
+) -> str:
+    params = [f"url={quote(target_url, safe='')}"]
+    if referer:
+        params.append(f"referer={quote(referer, safe='')}")
+    if origin:
+        params.append(f"origin={quote(origin, safe='')}")
+    if ua:
+        params.append(f"ua={quote(ua, safe='')}")
+    return f"/api/proxy?{'&'.join(params)}"
+
+
+def rewrite_hls_playlist(
+    playlist_text: str,
+    base_url: str,
+    referer: str | None = None,
+    origin: str | None = None,
+    ua: str | None = None,
+) -> str:
+    """Rewrite relative and absolute URLs inside an HLS playlist to route through /api/proxy."""
+    out_lines: list[str] = []
+    for raw_line in playlist_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            out_lines.append(raw_line)
+            continue
+        if line.startswith("#"):
+            rewritten = _HLS_URI_ATTR_RE.sub(
+                lambda m: f'{m.group(1)}{_build_proxy_url(urljoin(base_url, m.group(2)), referer, origin, ua)}{m.group(3)}',
+                raw_line,
+            )
+            out_lines.append(rewritten)
+            continue
+        resolved = urljoin(base_url, line)
+        out_lines.append(_build_proxy_url(resolved, referer, origin, ua))
+    return "\n".join(out_lines)
 
 
 @app.get("/api/health")
@@ -38,6 +89,119 @@ async def api_extract(payload: ExtractRequest) -> ExtractionResult:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ExtractionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.api_route("/api/proxy", methods=["GET", "HEAD"])
+async def proxy_media(
+    request: Request,
+    url: str = Query(...),
+    referer: str | None = Query(default=None),
+    origin: str | None = Query(default=None),
+    ua: str | None = Query(default=None),
+) -> Response:
+    """Relay public media streams and HLS playlists with Referer/Origin headers & CORS."""
+    try:
+        current_url = await run_in_threadpool(validate_public_url, url)
+    except UnsafeURLError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    upstream_headers: dict[str, str] = {
+        "User-Agent": (ua or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36")[:512],
+    }
+    if referer:
+        upstream_headers["Referer"] = referer[:512]
+    if origin:
+        upstream_headers["Origin"] = origin[:512]
+    range_hdr = request.headers.get("range")
+    if range_hdr:
+        upstream_headers["Range"] = range_hdr
+
+    cors_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges, Content-Type",
+    }
+
+    client = httpx.AsyncClient(timeout=httpx.Timeout(15.0, read=30.0), follow_redirects=False)
+    try:
+        resp: httpx.Response | None = None
+        for _ in range(6):
+            req = client.build_request(request.method, current_url, headers=upstream_headers)
+            resp = await client.send(req, stream=True)
+            if resp.is_redirect and resp.headers.get("location"):
+                next_raw = urljoin(current_url, resp.headers["location"])
+                await resp.aclose()
+                current_url = await run_in_threadpool(validate_public_url, next_raw)
+                continue
+            break
+
+        if resp is None:
+            await client.aclose()
+            raise HTTPException(status_code=502, detail="Upstream redirect loop.")
+
+        ct = (resp.headers.get("content-type") or "application/octet-stream").lower()
+        is_hls = (
+            "mpegurl" in ct
+            or current_url.lower().split("?", 1)[0].endswith(".m3u8")
+        )
+
+        if request.method == "HEAD":
+            resp_headers = dict(cors_headers)
+            for h in ("content-type", "content-length", "content-range", "accept-ranges"):
+                if resp.headers.get(h):
+                    resp_headers[h] = resp.headers[h]
+            status_code = resp.status_code
+            await resp.aclose()
+            await client.aclose()
+            return Response(status_code=status_code, headers=resp_headers)
+
+        if is_hls and resp.status_code < 400:
+            raw_bytes = bytearray()
+            async for chunk in resp.aiter_bytes():
+                raw_bytes.extend(chunk)
+                if len(raw_bytes) > _MAX_MANIFEST_PROXY_BYTES:
+                    break
+            status_code = resp.status_code
+            await resp.aclose()
+            await client.aclose()
+
+            text = bytes(raw_bytes).decode("utf-8", errors="replace")
+            if text.lstrip("\ufeff \t\r\n").startswith("#EXTM3U"):
+                rewritten = rewrite_hls_playlist(text, current_url, referer, origin, ua)
+                return Response(
+                    content=rewritten,
+                    status_code=status_code,
+                    media_type="application/vnd.apple.mpegurl",
+                    headers=cors_headers,
+                )
+            return Response(content=bytes(raw_bytes), status_code=status_code, media_type=ct, headers=cors_headers)
+
+        stream_headers = dict(cors_headers)
+        for h in ("content-type", "content-length", "content-range", "accept-ranges"):
+            if resp.headers.get(h):
+                stream_headers[h] = resp.headers[h]
+
+        async def _stream_body() -> AsyncIterator[bytes]:
+            try:
+                async for chunk in resp.aiter_bytes(chunk_size=65536):
+                    yield chunk
+            finally:
+                await resp.aclose()
+                await client.aclose()
+
+        return StreamingResponse(
+            _stream_body(),
+            status_code=resp.status_code,
+            headers=stream_headers,
+            media_type=resp.headers.get("content-type"),
+        )
+    except UnsafeURLError as exc:
+        await client.aclose()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        raise HTTPException(status_code=502, detail=f"Proxy upstream error: {exc}") from exc
 
 
 @app.post("/api/rooms")

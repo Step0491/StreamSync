@@ -73,6 +73,11 @@
         <div id="status-box" class="status hidden" role="status"></div>
       </section>
 
+      <div id="room-status-strip" class="card hidden" style="padding: 0.75rem 1rem;">
+        <div id="buffer-barrier-banner" class="buffer-banner hidden" role="status"></div>
+        <div id="room-sync-log" class="sync-log hidden"></div>
+      </div>
+
       <section id="player-section" class="card player-card hidden">
         <div class="player-bar">
           <div>
@@ -87,12 +92,8 @@
           </div>
         </div>
 
-        <div id="buffer-barrier-banner" class="buffer-banner hidden" role="status"></div>
         <div id="waiting-host-banner" class="waiting-host-banner hidden" role="status">
           Waiting for Room Host to start a synchronized stream...
-        </div>
-        <div id="native-bridge-note" class="native-player-note hidden">
-          Streaming via Native Android ExoPlayer (Hardware-Locked Video + Audio Sync)
         </div>
 
         <video id="video-player" controls playsinline></video>
@@ -104,8 +105,6 @@
             <select id="manifest-audio-select"></select>
           </label>
         </div>
-
-        <div id="room-sync-log" class="sync-log hidden"></div>
       </section>
 
       <section id="tracks-section" class="card hidden">

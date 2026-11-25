@@ -18,10 +18,10 @@ const mediaDuration = document.getElementById("media-duration");
 const mediaLive = document.getElementById("media-live");
 const nowPlayingEl = document.getElementById("now-playing");
 const syncIndicator = document.getElementById("sync-indicator");
+const roomStatusStrip = document.getElementById("room-status-strip");
 const roomSyncLog = document.getElementById("room-sync-log");
 const bufferBarrierBanner = document.getElementById("buffer-barrier-banner");
 const waitingHostBanner = document.getElementById("waiting-host-banner");
-const nativeBridgeNote = document.getElementById("native-bridge-note");
 
 const videoEl = document.getElementById("video-player");
 const audioEl = document.getElementById("audio-player");
@@ -53,16 +53,21 @@ const chatMessages = document.getElementById("chat-messages");
 const chatForm = document.getElementById("chat-form");
 const chatInput = document.getElementById("chat-input");
 
-// Detect Native Android Media3 ExoPlayer Bridge
+// Detect Native Android Media3 ExoPlayer Bridge & Electron Desktop Proxy
 const hasNativeAndroidPlayer = Boolean(
   window.AndroidNativePlayer &&
     typeof window.AndroidNativePlayer.isAvailable === "function" &&
     window.AndroidNativePlayer.isAvailable()
 );
+const hasDesktopProxy = Boolean(
+  window.StreamSyncDesktop &&
+    typeof window.StreamSyncDesktop.registerStreamHeaders === "function"
+);
 
 if (hasNativeAndroidPlayer) {
+  // Native ExoPlayer renders above roomWebView; never show a duplicate HTML5 player card below it!
+  playerSection.classList.add("hidden");
   videoEl.classList.add("hidden");
-  nativeBridgeNote.classList.remove("hidden");
 }
 
 let hlsVideoInstance = null;
@@ -74,11 +79,13 @@ let dualSyncActive = false;
 let canonicalPlaybackRate = 1.0;
 let videoBuffering = false;
 let audioBuffering = false;
+let hasReachedReadyForMedia = false;
 let pausedByBarrier = false;
 let currentData = null;
 let lastLoadedPlayback = null;
 let lastLoadedTitle = "";
 let pendingMediaBroadcast = null;
+let currentProxyFallbackTried = false;
 
 // Room WebSocket & Clock Sync state
 let ws = null;
@@ -172,6 +179,7 @@ function resetWebPlayers() {
   dualSyncActive = false;
   videoBuffering = false;
   audioBuffering = false;
+  hasReachedReadyForMedia = false;
   pausedByBarrier = false;
   canonicalPlaybackRate = 1.0;
 
@@ -231,10 +239,37 @@ function isUrlDash(url, flag) {
   return /\.mpd(\?|#|$)/i.test(url || "") || /dash\+xml/i.test(url || "");
 }
 
-function attachVideoSource(url, isHls, isDash, showInternalAudioSelector = true) {
+function buildWebProxyUrl(rawUrl, headers = {}) {
+  if (!rawUrl || rawUrl.startsWith("/api/proxy")) return rawUrl;
+  const params = new URLSearchParams();
+  params.set("url", rawUrl);
+  for (const [k, v] of Object.entries(headers || {})) {
+    if (!v) continue;
+    const low = k.toLowerCase();
+    if (low === "referer") params.set("referer", v);
+    else if (low === "origin") params.set("origin", v);
+    else if (low === "user-agent") params.set("ua", v);
+  }
+  return `/api/proxy?${params.toString()}`;
+}
+
+function shouldAutoProxyOnWeb(playback) {
+  if (hasNativeAndroidPlayer || hasDesktopProxy) return false;
+  const hdrs = playback && playback.headers;
+  if (!hdrs) return false;
+  return Object.keys(hdrs).some((k) => {
+    const low = k.toLowerCase();
+    return (low === "referer" || low === "origin") && Boolean(hdrs[k]);
+  });
+}
+
+function attachVideoSource(url, isHls, isDash, showInternalAudioSelector = true, onFatalLoadError = null) {
   if (isUrlDash(url, isDash) && window.dashjs) {
     dashVideoInstance = dashjs.MediaPlayer().create();
     dashVideoInstance.initialize(videoEl, url, false);
+    if (onFatalLoadError) {
+      dashVideoInstance.on(dashjs.MediaPlayer.events.ERROR, () => onFatalLoadError());
+    }
     if (showInternalAudioSelector) {
       dashVideoInstance.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED, () => {
         const audioTracks = dashVideoInstance.getTracksFor("audio") || [];
@@ -255,6 +290,13 @@ function attachVideoSource(url, isHls, isDash, showInternalAudioSelector = true)
     hlsVideoInstance = new Hls();
     hlsVideoInstance.loadSource(url);
     hlsVideoInstance.attachMedia(videoEl);
+    if (onFatalLoadError) {
+      hlsVideoInstance.on(Hls.Events.ERROR, (_evt, data) => {
+        if (data && data.fatal && data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          onFatalLoadError();
+        }
+      });
+    }
     if (showInternalAudioSelector) {
       hlsVideoInstance.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
         const tracks = hlsVideoInstance.audioTracks || [];
@@ -272,7 +314,7 @@ function attachVideoSource(url, isHls, isDash, showInternalAudioSelector = true)
   }
 }
 
-function attachAudioSource(audioUrl) {
+function attachAudioSource(audioUrl, onFatalLoadError = null) {
   if (isUrlDash(audioUrl, false) && window.dashjs) {
     dashAudioInstance = dashjs.MediaPlayer().create();
     dashAudioInstance.initialize(audioEl, audioUrl, false);
@@ -280,6 +322,13 @@ function attachAudioSource(audioUrl) {
     hlsAudioInstance = new Hls();
     hlsAudioInstance.loadSource(audioUrl);
     hlsAudioInstance.attachMedia(audioEl);
+    if (onFatalLoadError) {
+      hlsAudioInstance.on(Hls.Events.ERROR, (_evt, data) => {
+        if (data && data.fatal && data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          onFatalLoadError();
+        }
+      });
+    }
   } else {
     audioEl.src = audioUrl;
   }
@@ -310,72 +359,19 @@ function startLocalDualTrackPhaseLock() {
   }, 250);
 }
 
-function loadUnifiedPlayback(playback, title = null, broadcast = false, options = {}) {
+async function loadUnifiedPlayback(playback, title = null, broadcast = false, options = {}) {
   if (!playback || !playback.video_url) return;
   const autoPlay = Boolean(options.autoPlay);
   const alreadyLoadedNative = Boolean(options.alreadyLoadedNative);
-
-  // If running inside StreamSync Electron Desktop, register Referer/Origin headers with Chromium session
-  if (
-    window.StreamSyncDesktop &&
-    typeof window.StreamSyncDesktop.registerStreamHeaders === "function" &&
-    playback.headers
-  ) {
-    const urls = [playback.video_url, playback.audio_url].filter(Boolean);
-    window.StreamSyncDesktop.registerStreamHeaders(urls, playback.headers).catch(() => {});
-  }
+  const forceProxy = Boolean(options.forceProxy);
 
   lastLoadedPlayback = playback;
   lastLoadedTitle = title || mediaTitle.textContent || "Untitled Stream";
-
-  resetWebPlayers();
-  bufferBarrierBanner.classList.add("hidden");
-  if (waitingHostBanner) waitingHostBanner.classList.add("hidden");
-  playerSection.classList.remove("hidden");
-  if (title) mediaTitle.textContent = title;
-
-  const isPaired = playback.mode === "paired" && Boolean(playback.audio_url);
-  if (isPaired) {
-    syncIndicator.classList.remove("hidden");
-    nowPlayingEl.textContent = playback.label || "Unified Video + Audio";
-  } else {
-    nowPlayingEl.textContent = playback.label || "Playing stream";
+  if (!forceProxy) {
+    currentProxyFallbackTried = false;
   }
 
-  if (hasNativeAndroidPlayer) {
-    if (!alreadyLoadedNative) {
-      window.AndroidNativePlayer.loadMedia(
-        JSON.stringify({
-          video_url: playback.video_url,
-          audio_url: playback.audio_url || "",
-          is_hls: Boolean(playback.is_hls),
-          is_dash: Boolean(playback.is_dash),
-          title: title || mediaTitle.textContent || "Untitled Stream",
-          label: playback.label || "",
-          headers: playback.headers || {},
-          auto_play: autoPlay,
-        })
-      );
-    }
-  } else if (isPaired) {
-    dualSyncActive = true;
-    // Mute internal muxed track on <video> so only the selected external <audio> plays
-    videoEl.muted = true;
-    audioEl.muted = false;
-    audioEl.volume = videoEl.volume;
-    attachVideoSource(playback.video_url, playback.is_hls, playback.is_dash, false);
-    attachAudioSource(playback.audio_url);
-    startLocalDualTrackPhaseLock();
-    if (autoPlay) {
-      videoEl.play().catch(() => {});
-    }
-  } else {
-    attachVideoSource(playback.video_url, playback.is_hls, playback.is_dash, true);
-    if (autoPlay) {
-      videoEl.play().catch(() => {});
-    }
-  }
-
+  // Broadcast immediately so peers receive media_changed without waiting for local proxy registration
   if (broadcast) {
     const mediaMsg = {
       type: "load_media",
@@ -390,11 +386,98 @@ function loadUnifiedPlayback(playback, title = null, broadcast = false, options 
       pendingMediaBroadcast = null;
       ws.send(JSON.stringify(mediaMsg));
     } else if (intendedRoomId || currentRoomId) {
-      // Queue media broadcast so it flushes the instant the WebSocket (re)connects!
       pendingMediaBroadcast = mediaMsg;
-      if ((!ws || ws.readyState === WebSocket.CLOSED) && (intendedRoomId || currentRoomId)) {
+      if (!ws || ws.readyState === WebSocket.CLOSED) {
         connectToRoom(intendedRoomId || currentRoomId);
       }
+    }
+  }
+
+  // Wait for Electron main-process session header proxy BEFORE hls.js/dash.js fires requests
+  if (hasDesktopProxy && playback.headers) {
+    const urls = [playback.video_url, playback.audio_url].filter(Boolean);
+    try {
+      await window.StreamSyncDesktop.registerStreamHeaders(urls, playback.headers);
+    } catch (_) {}
+  }
+
+  resetWebPlayers();
+  updateStatusStripVisibility();
+  if (waitingHostBanner) waitingHostBanner.classList.add("hidden");
+  if (title) mediaTitle.textContent = title;
+
+  const isPaired = playback.mode === "paired" && Boolean(playback.audio_url);
+  if (isPaired) {
+    syncIndicator.classList.remove("hidden");
+    nowPlayingEl.textContent = playback.label || "Unified Video + Audio";
+  } else {
+    nowPlayingEl.textContent = playback.label || "Playing stream";
+  }
+
+  if (hasNativeAndroidPlayer) {
+    playerSection.classList.add("hidden");
+    if (!alreadyLoadedNative) {
+      window.AndroidNativePlayer.loadMedia(
+        JSON.stringify({
+          video_url: playback.video_url,
+          audio_url: playback.audio_url || "",
+          is_hls: Boolean(playback.is_hls),
+          is_dash: Boolean(playback.is_dash),
+          title: title || mediaTitle.textContent || "Untitled Stream",
+          label: playback.label || "",
+          headers: playback.headers || {},
+          auto_play: autoPlay,
+        })
+      );
+    }
+    return;
+  }
+
+  playerSection.classList.remove("hidden");
+
+  const useProxy = forceProxy || shouldAutoProxyOnWeb(playback);
+  const effectiveVideoUrl = useProxy
+    ? buildWebProxyUrl(playback.video_url, playback.headers)
+    : playback.video_url;
+  const effectiveAudioUrl = isPaired
+    ? useProxy
+      ? buildWebProxyUrl(playback.audio_url, playback.headers)
+      : playback.audio_url
+    : null;
+
+  const triggerProxyFallback = () => {
+    if (hasNativeAndroidPlayer || hasDesktopProxy || currentProxyFallbackTried) return;
+    currentProxyFallbackTried = true;
+    const savedTime = videoEl.currentTime || 0;
+    const wasPlaying = !videoEl.paused || autoPlay;
+    loadUnifiedPlayback(playback, title, false, {
+      autoPlay: wasPlaying,
+      forceProxy: true,
+    }).then(() => {
+      if (savedTime > 0.5) {
+        setTimeout(() => {
+          videoEl.currentTime = savedTime;
+          if (dualSyncActive) audioEl.currentTime = savedTime;
+        }, 350);
+      }
+    });
+  };
+
+  if (isPaired) {
+    dualSyncActive = true;
+    videoEl.muted = true;
+    audioEl.muted = false;
+    audioEl.volume = videoEl.volume;
+    attachVideoSource(effectiveVideoUrl, playback.is_hls, playback.is_dash, false, triggerProxyFallback);
+    attachAudioSource(effectiveAudioUrl, triggerProxyFallback);
+    startLocalDualTrackPhaseLock();
+    if (autoPlay) {
+      videoEl.play().catch(() => {});
+    }
+  } else {
+    attachVideoSource(effectiveVideoUrl, playback.is_hls, playback.is_dash, true, triggerProxyFallback);
+    if (autoPlay) {
+      videoEl.play().catch(() => {});
     }
   }
 }
@@ -413,11 +496,17 @@ function reportBufferStateToRoom(isBuffering) {
   );
 }
 
+function updateStatusStripVisibility() {
+  if (!roomStatusStrip) return;
+  const hasBanner = !bufferBarrierBanner.classList.contains("hidden");
+  const hasLog = !roomSyncLog.classList.contains("hidden");
+  roomStatusStrip.classList.toggle("hidden", !hasBanner && !hasLog);
+}
+
 function updateWebCombinedBuffering() {
   const anyBuffering = videoBuffering || (dualSyncActive && audioBuffering);
   if (dualSyncActive) {
     if (audioBuffering && !videoEl.paused) {
-      // Pause video momentarily while separated audio track catches up
       withSuppressedRoomSync(() => videoEl.pause());
     } else if (!anyBuffering && !pausedByBarrier && videoEl.paused && audioEl.readyState >= 2 && shouldResumeAfterLocalStall) {
       shouldResumeAfterLocalStall = false;
@@ -428,12 +517,26 @@ function updateWebCombinedBuffering() {
       });
     }
   }
+  // Never pause the whole room while a newly-joined client is still loading its first frame
+  if (anyBuffering && !hasReachedReadyForMedia) return;
   reportBufferStateToRoom(anyBuffering);
 }
 
 let shouldResumeAfterLocalStall = false;
 
 if (!hasNativeAndroidPlayer) {
+  videoEl.addEventListener("error", () => {
+    videoBuffering = false;
+    reportBufferStateToRoom(false);
+    if (!currentProxyFallbackTried && lastLoadedPlayback && !hasDesktopProxy) {
+      currentProxyFallbackTried = true;
+      loadUnifiedPlayback(lastLoadedPlayback, lastLoadedTitle, false, {
+        autoPlay: true,
+        forceProxy: true,
+      });
+    }
+  });
+
   videoEl.addEventListener("play", () => {
     if (dualSyncActive) {
       audioEl.currentTime = videoEl.currentTime;
@@ -466,6 +569,7 @@ if (!hasNativeAndroidPlayer) {
   });
 
   videoEl.addEventListener("playing", () => {
+    hasReachedReadyForMedia = true;
     videoBuffering = false;
     if (dualSyncActive && !audioBuffering && !pausedByBarrier) {
       audioEl.currentTime = videoEl.currentTime;
@@ -475,6 +579,7 @@ if (!hasNativeAndroidPlayer) {
   });
 
   videoEl.addEventListener("canplay", () => {
+    hasReachedReadyForMedia = true;
     if (videoBuffering) {
       videoBuffering = false;
       updateWebCombinedBuffering();
@@ -635,6 +740,7 @@ function applyRemoteSync(isPlaying, rawPosition, playbackRate, options = {}) {
   if (logText) {
     roomSyncLog.textContent = logText;
     roomSyncLog.classList.remove("hidden");
+    updateStatusStripVisibility();
   }
 }
 
@@ -647,6 +753,7 @@ function handleBufferBarrier(msg) {
     const names = (msg.waiting_for || []).join(", ") || "room member";
     bufferBarrierBanner.textContent = `Waiting for ${names} to buffer... (Room paused in sync)`;
     bufferBarrierBanner.classList.remove("hidden");
+    updateStatusStripVisibility();
 
     if (hasNativeAndroidPlayer) {
       window.AndroidNativePlayer.setBufferingBarrier(true, Number(msg.position || 0), Number(msg.playback_rate || 1));
@@ -659,6 +766,7 @@ function handleBufferBarrier(msg) {
   } else {
     pausedByBarrier = false;
     bufferBarrierBanner.classList.add("hidden");
+    updateStatusStripVisibility();
     const targetPos = projectPosition(msg.position, msg.is_playing, msg.playback_rate, msg.server_ts);
     if (hasNativeAndroidPlayer) {
       window.AndroidNativePlayer.setBufferingBarrier(false, Number(targetPos), Number(msg.playback_rate || 1));
@@ -675,13 +783,17 @@ function updateRoomPermissionsUI() {
   const isHost = Boolean(myClientId && myClientId === roomHostId);
   const isGuest = inRoom && Boolean(myClientId) && !isHost;
 
-  // Hide the URL extractor bar when joining another Host's room; always show the streaming window!
+  // Hide the URL extractor bar when joining another Host's room; always show the streaming window on Web/PC!
   if (extractCard) {
     extractCard.classList.toggle("hidden", isGuest);
   }
   if (isGuest) {
     tracksSection.classList.add("hidden");
-    playerSection.classList.remove("hidden");
+    if (!hasNativeAndroidPlayer) {
+      playerSection.classList.remove("hidden");
+    } else {
+      playerSection.classList.add("hidden");
+    }
     if (waitingHostBanner) {
       waitingHostBanner.classList.toggle("hidden", Boolean(lastLoadedPlayback));
     }
@@ -792,6 +904,7 @@ function setRoomUI(roomId) {
     roomHostId = null;
     lastAppliedSyncSeq = -1;
     bufferBarrierBanner.classList.add("hidden");
+    updateStatusStripVisibility();
     if (extractCard) extractCard.classList.remove("hidden");
     if (waitingHostBanner) waitingHostBanner.classList.add("hidden");
   }

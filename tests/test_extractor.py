@@ -95,3 +95,24 @@ def test_api_health_and_bad_url():
 
     bad = client.post("/api/extract", json={"url": "http://127.0.0.1/test.mp4"})
     assert bad.status_code == 400
+
+
+def test_proxy_blocks_ssrf_and_rewrites_hls():
+    from app.main import rewrite_hls_playlist
+
+    ssrf = client.get("/api/proxy?url=http://127.0.0.1/secret.m3u8")
+    assert ssrf.status_code == 400
+
+    raw_m3u8 = (
+        "#EXTM3U\n"
+        '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a1",URI="audio/it.m3u8"\n'
+        "#EXTINF:6.0,\n"
+        "seg_001.ts\n"
+    )
+    rewritten = rewrite_hls_playlist(
+        raw_m3u8,
+        base_url="https://cdn.example.com/hls/master.m3u8",
+        referer="https://site.example/",
+    )
+    assert "/api/proxy?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Faudio%2Fit.m3u8&referer=https%3A%2F%2Fsite.example%2F" in rewritten
+    assert "/api/proxy?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fseg_001.ts&referer=https%3A%2F%2Fsite.example%2F" in rewritten

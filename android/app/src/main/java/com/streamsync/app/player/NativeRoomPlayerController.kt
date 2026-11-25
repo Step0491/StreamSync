@@ -53,6 +53,7 @@ class NativeRoomPlayerController(
     private var appliedPairedAudioOverride = false
     private var isFullscreen = false
     private var hasActiveMedia = false
+    private var hasReachedReadyOnce = false
     private var isRoomTabVisible = true
 
     val jsBridge = JsBridge()
@@ -88,15 +89,24 @@ class NativeRoomPlayerController(
                 pushSnapshotToWeb()
                 when (playbackState) {
                     Player.STATE_BUFFERING -> {
-                        if (hasActiveMedia && !pausedByRoomBarrier) {
+                        // Only trigger room-wide buffering barrier AFTER initial load reached READY,
+                        // so joining guests loading their first frame never pause the Admin!
+                        if (hasActiveMedia && hasReachedReadyOnce && exoPlayer.playWhenReady && !pausedByRoomBarrier) {
                             emitEventToWeb("buffering_start")
                         }
                     }
                     Player.STATE_READY -> {
+                        hasReachedReadyOnce = true
                         emitEventToWeb("buffering_end")
                     }
-                    else -> {}
+                    Player.STATE_IDLE, Player.STATE_ENDED -> {
+                        emitEventToWeb("buffering_end")
+                    }
                 }
+            }
+
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                emitEventToWeb("buffering_end")
             }
 
             override fun onPositionDiscontinuity(
@@ -167,6 +177,7 @@ class NativeRoomPlayerController(
         runWithSuppressedEvents {
             pausedByRoomBarrier = false
             hasActiveMedia = true
+            hasReachedReadyOnce = false
             hasExternalPairedAudio = !audioUrl.isNullOrBlank()
             appliedPairedAudioOverride = false
 
