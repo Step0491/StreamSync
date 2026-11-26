@@ -297,3 +297,40 @@ button:disabled {
   padding: 12px 4px;
   line-height: 1.45;
 }
+
+.update-bar {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  background: #171f2e;
+  border-bottom: 1px solid var(--border);
+}
+
+.update-bar.hidden {
+  display: none;
+}
+
+.update-bar-text {
+  font-size: 12px;
+  font-weight: 600;
+  color: #a5b4fc;
+  white-space: nowrap;
+}
+
+.update-track {
+  flex: 1;
+  height: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.update-fill {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1, #818cf8);
+  transition: width 0.15s ease;
+}

@@ -10,6 +10,9 @@ const urlForm = document.getElementById("url-form");
 const urlInput = document.getElementById("url-input");
 const btnStreams = document.getElementById("btn-streams");
 const btnUpdate = document.getElementById("btn-update");
+const updateBar = document.getElementById("update-bar");
+const updateBarText = document.getElementById("update-bar-text");
+const updateFill = document.getElementById("update-fill");
 
 const drawer = document.getElementById("streams-drawer");
 const drawerTitle = document.getElementById("drawer-title");
@@ -47,12 +50,19 @@ window.StreamSyncShell.onUpdateProgress((info) => {
   if (info.done) {
     btnUpdate.disabled = false;
     btnUpdate.textContent = "Update";
+    updateBar.classList.add("hidden");
+    updateFill.style.width = "0%";
   } else if (typeof info.pct === "number" && info.pct >= 0) {
     btnUpdate.disabled = true;
     btnUpdate.textContent = `Update ${info.pct}%`;
+    updateBar.classList.remove("hidden");
+    updateFill.style.width = `${info.pct}%`;
+    updateBarText.textContent = info.text || `Downloading update... ${info.pct}%`;
   } else {
     btnUpdate.disabled = true;
     btnUpdate.textContent = info.text || "Updating...";
+    updateBar.classList.remove("hidden");
+    updateBarText.textContent = info.text || "Downloading update...";
   }
 });
 btnCloseDrawer.addEventListener("click", () => window.StreamSyncShell.toggleDrawer(false));

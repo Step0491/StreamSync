@@ -48,6 +48,7 @@ let streamSniffer = null;
 
 let activeTab = "room"; // "room" | "browser"
 let drawerOpen = false;
+let updateBarVisible = false;
 let isHtmlFullscreen = false;
 let wasFullScreenBeforeHtml = false;
 let currentBrowserUrl = DEFAULT_BROWSER_URL;
@@ -166,10 +167,11 @@ function layoutViews() {
     return;
   }
 
-  const contentH = Math.max(0, winH - TOPBAR_HEIGHT);
+  const topOffset = TOPBAR_HEIGHT + (updateBarVisible ? 36 : 0);
+  const contentH = Math.max(0, winH - topOffset);
   const contentW = drawerOpen ? Math.max(320, winW - DRAWER_WIDTH) : winW;
 
-  const activeBounds = { x: 0, y: TOPBAR_HEIGHT, width: contentW, height: contentH };
+  const activeBounds = { x: 0, y: topOffset, width: contentW, height: contentH };
 
   if (activeTab === "room") {
     roomView.setBounds(activeBounds);
@@ -783,7 +785,17 @@ function readBuildInfo() {
 }
 
 function sendUpdateProgress(payload) {
+  const nextVisible = !payload.done;
+  if (updateBarVisible !== nextVisible) {
+    updateBarVisible = nextVisible;
+    layoutViews();
+  }
   if (mainWindow && !mainWindow.isDestroyed()) {
+    if (payload.done) {
+      mainWindow.setProgressBar(-1);
+    } else if (typeof payload.pct === "number" && payload.pct >= 0) {
+      mainWindow.setProgressBar(payload.pct / 100);
+    }
     mainWindow.webContents.send("update:progress", payload);
   }
 }
@@ -842,7 +854,7 @@ ipcMain.handle("app:check-update", async () => {
     });
     if (choice.response !== 0 || !exeUrl) return;
 
-    sendUpdateProgress({ pct: 0 });
+    sendUpdateProgress({ pct: 0, text: `Downloading build ${bestBuild}... 0%` });
     const dlResp = await net.fetch(exeUrl);
     if (!dlResp.ok || !dlResp.body) {
       throw new Error(`Download HTTP ${dlResp.status}`);
@@ -868,8 +880,13 @@ ipcMain.handle("app:check-update", async () => {
         const pct = Math.min(100, Math.max(0, Math.floor((downloaded * 100) / totalBytes)));
         if (pct !== lastPct) {
           lastPct = pct;
-          sendUpdateProgress({ pct });
+          const mbDone = (downloaded / (1024 * 1024)).toFixed(1);
+          const mbTotal = (totalBytes / (1024 * 1024)).toFixed(1);
+          sendUpdateProgress({ pct, text: `Downloading build ${bestBuild}: ${pct}% (${mbDone} / ${mbTotal} MB)` });
         }
+      } else {
+        const mbDone = (downloaded / (1024 * 1024)).toFixed(1);
+        sendUpdateProgress({ pct: -1, text: `Downloading build ${bestBuild}... ${mbDone} MB` });
       }
     }
     await new Promise((resolve, reject) => {
