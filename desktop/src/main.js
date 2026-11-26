@@ -322,6 +322,7 @@ async function createMainWindow() {
       nodeIntegrationInSubFrames: true,
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
     },
   });
 
@@ -598,6 +599,7 @@ ipcMain.handle("room:extract-source-url", async (_e, { sourceUrl, wantPaired }) 
 
   return await new Promise((resolve) => {
     const start = Date.now();
+    let firstCandidateAt = 0;
     const timer = setInterval(() => {
       const list = streamSniffer.getSortedStreams().filter((s) => !s.isDrmProtected);
       const combined = list.filter((s) => s.kind === "COMBINED");
@@ -610,11 +612,17 @@ ipcMain.handle("room:extract-source-url", async (_e, { sourceUrl, wantPaired }) 
       if (wantPaired && videoOnly.length > 0 && audioOnly.length > 0) {
         chosenVideo = videoOnly[0];
         chosenAudio = audioOnly[0];
-      } else if (combined.length > 0) {
-        chosenVideo = combined[0];
-      } else if (videoOnly.length > 0 && audioOnly.length > 0) {
-        chosenVideo = videoOnly[0];
-        chosenAudio = audioOnly[0];
+      } else if (combined.length > 0 || (videoOnly.length > 0 && audioOnly.length > 0)) {
+        if (firstCandidateAt === 0) firstCandidateAt = Date.now();
+        // When Admin merged Video+Audio, wait up to 1.8s for separated audio+video before falling back to combined
+        if (!wantPaired || Date.now() - firstCandidateAt >= 1800) {
+          if (videoOnly.length > 0 && audioOnly.length > 0) {
+            chosenVideo = videoOnly[0];
+            chosenAudio = audioOnly[0];
+          } else if (combined.length > 0) {
+            chosenVideo = combined[0];
+          }
+        }
       }
 
       if (chosenVideo) {

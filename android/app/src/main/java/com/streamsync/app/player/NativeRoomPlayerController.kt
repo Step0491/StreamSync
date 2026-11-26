@@ -97,8 +97,12 @@ class NativeRoomPlayerController(
                         }
                     }
                     Player.STATE_READY -> {
+                        val firstReady = !hasReachedReadyOnce
                         hasReachedReadyOnce = true
                         emitEventToWeb("buffering_end")
+                        if (firstReady) {
+                            emitEventToWeb("ready")
+                        }
                     }
                     Player.STATE_IDLE, Player.STATE_ENDED -> {
                         emitEventToWeb("buffering_end")

@@ -287,11 +287,31 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   border: 1px dashed var(--border);
 }
 
+.player-stage {
+  position: relative;
+  width: 100%;
+}
+
 video {
   width: 100%;
   max-height: 480px;
   background: #000;
   border-radius: 8px;
+  display: block;
+}
+
+.autoplay-overlay {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: fit-content;
+  height: fit-content;
+  padding: 0.85rem 1.3rem;
+  font-size: 0.96rem;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.94);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+  z-index: 4;
 }
 
 .sync-log {

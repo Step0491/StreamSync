@@ -7,7 +7,7 @@
     android:background="#0B0F17"
     android:orientation="vertical">
 
-    <!-- Top Mode Switcher -->
+    <!-- Top Mode Switcher: Rounded Square Icon Tiles -->
     <LinearLayout
         android:id="@+id/topModeBar"
         android:layout_width="match_parent"
@@ -15,62 +15,131 @@
         android:background="#131A26"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:padding="6dp">
+        android:paddingStart="8dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="6dp">
 
-        <Button
+        <LinearLayout
             android:id="@+id/btnTabRoom"
             android:layout_width="0dp"
-            android:layout_height="38dp"
-            android:layout_marginEnd="4dp"
-            android:layout_weight="0.95"
-            android:maxLines="1"
-            android:minWidth="0dp"
-            android:paddingStart="6dp"
-            android:paddingEnd="6dp"
-            android:text="Room"
-            android:textAllCaps="false"
-            android:textSize="12sp" />
+            android:layout_height="62dp"
+            android:layout_marginEnd="6dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_nav_tile"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="6dp">
 
-        <Button
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:contentDescription="Room"
+                android:src="@drawable/ic_tab_room" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:maxLines="1"
+                android:text="Room"
+                android:textColor="#E6EDF7"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <LinearLayout
             android:id="@+id/btnTabBrowser"
             android:layout_width="0dp"
-            android:layout_height="38dp"
-            android:layout_marginEnd="4dp"
-            android:layout_weight="1.1"
-            android:maxLines="1"
-            android:minWidth="0dp"
-            android:paddingStart="6dp"
-            android:paddingEnd="6dp"
-            android:text="Browser"
-            android:textAllCaps="false"
-            android:textSize="12sp" />
+            android:layout_height="62dp"
+            android:layout_marginEnd="6dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_nav_tile"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="6dp">
 
-        <Button
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:contentDescription="Browser"
+                android:src="@drawable/ic_tab_browser" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:maxLines="1"
+                android:text="Browser"
+                android:textColor="#E6EDF7"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <LinearLayout
             android:id="@+id/btnStreams"
             android:layout_width="0dp"
-            android:layout_height="38dp"
-            android:layout_marginEnd="4dp"
-            android:layout_weight="1.35"
-            android:maxLines="1"
-            android:minWidth="0dp"
-            android:paddingStart="6dp"
-            android:paddingEnd="6dp"
-            android:text="Streams (0)"
-            android:textAllCaps="false"
-            android:textSize="12sp" />
+            android:layout_height="62dp"
+            android:layout_marginEnd="6dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_nav_tile"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="6dp">
 
-        <Button
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:contentDescription="Stream"
+                android:src="@drawable/ic_tab_stream" />
+
+            <TextView
+                android:id="@+id/tvStreamLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:maxLines="1"
+                android:text="Stream"
+                android:textColor="#E6EDF7"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <LinearLayout
             android:id="@+id/btnUpdate"
             android:layout_width="0dp"
-            android:layout_height="38dp"
-            android:layout_weight="0.95"
-            android:maxLines="1"
-            android:minWidth="0dp"
-            android:paddingStart="6dp"
-            android:paddingEnd="6dp"
-            android:text="Update"
-            android:textAllCaps="false"
-            android:textSize="12sp" />
+            android:layout_height="62dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_nav_tile"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="6dp">
+
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:contentDescription="Update"
+                android:src="@drawable/ic_tab_update" />
+
+            <TextView
+                android:id="@+id/tvUpdateLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:maxLines="1"
+                android:text="Update"
+                android:textColor="#E6EDF7"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- Address Bar + Per-Site AdBlock Shield Toggle -->

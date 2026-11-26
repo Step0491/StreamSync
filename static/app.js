@@ -25,6 +25,7 @@ const waitingHostBanner = document.getElementById("waiting-host-banner");
 
 const videoEl = document.getElementById("video-player");
 const audioEl = document.getElementById("audio-player");
+const autoplayOverlay = document.getElementById("autoplay-overlay");
 const manifestAudioBar = document.getElementById("manifest-audio-bar");
 const manifestAudioSelect = document.getElementById("manifest-audio-select");
 
@@ -89,6 +90,11 @@ let lastKnownRoomSync = null;
 let hasAttemptedGuestExtraction = false;
 let pendingMediaBroadcast = null;
 let currentProxyFallbackTried = false;
+let pendingInitialSync = null;
+let videoMetadataReady = false;
+let audioMetadataReady = false;
+let audioReadyFallbackTimer = null;
+let lastAudioSeekCorrectionPerf = 0;
 
 // Room WebSocket & Clock Sync state
 let ws = null;
@@ -185,7 +191,12 @@ function resetWebPlayers() {
   hasReachedReadyForMedia = false;
   pausedByBarrier = false;
   canonicalPlaybackRate = 1.0;
+  videoMetadataReady = false;
+  audioMetadataReady = false;
+  pendingInitialSync = null;
+  clearTimeout(audioReadyFallbackTimer);
 
+  if (autoplayOverlay) autoplayOverlay.classList.add("hidden");
   syncIndicator.classList.add("hidden");
   manifestAudioBar.classList.add("hidden");
   manifestAudioSelect.innerHTML = "";
@@ -211,13 +222,66 @@ function resetWebPlayers() {
     dashAudioInstance = null;
   }
 
-  videoEl.pause();
-  audioEl.pause();
-  videoEl.muted = false;
-  videoEl.removeAttribute("src");
-  audioEl.removeAttribute("src");
-  videoEl.load();
-  audioEl.load();
+  withSuppressedRoomSync(() => {
+    videoEl.pause();
+    audioEl.pause();
+    videoEl.muted = false;
+    videoEl.removeAttribute("src");
+    audioEl.removeAttribute("src");
+    videoEl.load();
+    audioEl.load();
+  });
+}
+
+function flushPendingInitialSync() {
+  if (!pendingInitialSync) return;
+  if (!hasNativeAndroidPlayer) {
+    if (!videoMetadataReady) return;
+    if (dualSyncActive && !audioMetadataReady) return;
+  }
+  const sync = pendingInitialSync;
+  pendingInitialSync = null;
+  clearTimeout(audioReadyFallbackTimer);
+
+  if (sync.buffering_active) {
+    handleBufferBarrier({
+      active: true,
+      waiting_for: sync.waiting_for,
+      position: sync.position,
+      playback_rate: sync.playback_rate,
+      sync_seq: sync.sync_seq,
+    });
+  } else {
+    applyRemoteSync(sync.is_playing, sync.position, sync.playback_rate, {
+      serverTs: sync.server_ts,
+      syncSeq: sync.sync_seq,
+      logText: sync.logText || "Synced with room",
+    });
+  }
+}
+
+if (autoplayOverlay) {
+  autoplayOverlay.addEventListener("click", () => {
+    autoplayOverlay.classList.add("hidden");
+    const target = lastKnownRoomSync
+      ? projectPosition(
+          lastKnownRoomSync.position,
+          lastKnownRoomSync.is_playing,
+          lastKnownRoomSync.playback_rate,
+          lastKnownRoomSync.server_ts
+        )
+      : videoEl.currentTime || 0;
+    withSuppressedRoomSync(() => {
+      if (videoEl.readyState >= 1 && Number.isFinite(target)) {
+        videoEl.currentTime = target;
+        if (dualSyncActive && audioEl.readyState >= 1) {
+          audioEl.currentTime = target;
+        }
+      }
+      videoEl.play().catch(() => {});
+      if (dualSyncActive) audioEl.play().catch(() => {});
+    }, 450);
+  });
 }
 
 function populateManifestAudioTracks(tracks, activeIndex, onSelect) {
@@ -273,8 +337,18 @@ function attachVideoSource(url, isHls, isDash, showInternalAudioSelector = true,
     if (onFatalLoadError) {
       dashVideoInstance.on(dashjs.MediaPlayer.events.ERROR, (e) => onFatalLoadError(e && e.error ? e.error.message : "DASH error"));
     }
+    hlsVideoInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+      if (videoEl.readyState >= 1) {
+        videoMetadataReady = true;
+        flushPendingInitialSync();
+      }
+    });
     if (showInternalAudioSelector) {
       dashVideoInstance.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED, () => {
+        if (videoEl.readyState >= 1) {
+          videoMetadataReady = true;
+          flushPendingInitialSync();
+        }
         const audioTracks = dashVideoInstance.getTracksFor("audio") || [];
         const current = dashVideoInstance.getCurrentTrackFor("audio");
         const activeIdx = Math.max(0, audioTracks.indexOf(current));
@@ -301,6 +375,12 @@ function attachVideoSource(url, isHls, isDash, showInternalAudioSelector = true,
         }
       });
     }
+    hlsVideoInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+      if (videoEl.readyState >= 1) {
+        videoMetadataReady = true;
+        flushPendingInitialSync();
+      }
+    });
     if (showInternalAudioSelector) {
       hlsVideoInstance.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
         const tracks = hlsVideoInstance.audioTracks || [];
@@ -351,7 +431,11 @@ function startLocalDualTrackPhaseLock() {
     const baseRate = videoEl.playbackRate || canonicalPlaybackRate || 1.0;
 
     if (absDiff > 0.28) {
-      audioEl.currentTime = vTime;
+      const nowPerf = performance.now();
+      if (!audioEl.seeking && audioEl.readyState >= 2 && nowPerf - lastAudioSeekCorrectionPerf > 1500) {
+        lastAudioSeekCorrectionPerf = nowPerf;
+        audioEl.currentTime = vTime;
+      }
       audioEl.playbackRate = baseRate;
     } else if (absDiff > 0.045) {
       // Smooth proportional micro-rate adjustment without audible clicks
@@ -403,7 +487,7 @@ async function loadUnifiedPlayback(playback, title = null, broadcast = false, op
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...mediaMsg,
-          by: (nicknameInput.value || "").trim() || "Host",
+          by: (nicknameInput.value || "").trim() || "Admin",
         }),
       }).catch(() => {});
       if (!ws || ws.readyState === WebSocket.CLOSED) {
@@ -421,6 +505,9 @@ async function loadUnifiedPlayback(playback, title = null, broadcast = false, op
   }
 
   resetWebPlayers();
+  if (options.initialSync) {
+    pendingInitialSync = options.initialSync;
+  }
   updateStatusStripVisibility();
   if (waitingHostBanner) waitingHostBanner.classList.add("hidden");
   if (title) mediaTitle.textContent = title;
@@ -429,6 +516,12 @@ async function loadUnifiedPlayback(playback, title = null, broadcast = false, op
   if (isPaired) {
     syncIndicator.classList.remove("hidden");
     nowPlayingEl.textContent = playback.label || "Unified Video + Audio";
+    audioReadyFallbackTimer = setTimeout(() => {
+      if (!audioMetadataReady) {
+        audioMetadataReady = true;
+        flushPendingInitialSync();
+      }
+    }, 2200);
   } else {
     nowPlayingEl.textContent = playback.label || "Playing stream";
   }
@@ -448,6 +541,8 @@ async function loadUnifiedPlayback(playback, title = null, broadcast = false, op
           auto_play: autoPlay,
         })
       );
+    } else if (pendingInitialSync) {
+      flushPendingInitialSync();
     }
     return;
   }
@@ -488,13 +583,17 @@ async function loadUnifiedPlayback(playback, title = null, broadcast = false, op
     loadUnifiedPlayback(playback, title, false, {
       autoPlay: wasPlaying,
       forceProxy: true,
-    }).then(() => {
-      if (savedTime > 0.5) {
-        setTimeout(() => {
-          videoEl.currentTime = savedTime;
-          if (dualSyncActive) audioEl.currentTime = savedTime;
-        }, 350);
-      }
+      initialSync:
+        lastKnownRoomSync ||
+        (savedTime > 0.5
+          ? {
+              is_playing: wasPlaying,
+              position: savedTime,
+              playback_rate: canonicalPlaybackRate || 1.0,
+              server_ts: Date.now() / 1000,
+              logText: "Loaded via StreamSync Proxy",
+            }
+          : null),
     });
   };
 
@@ -560,6 +659,20 @@ function updateWebCombinedBuffering() {
 let shouldResumeAfterLocalStall = false;
 
 if (!hasNativeAndroidPlayer) {
+  videoEl.addEventListener("loadedmetadata", () => {
+    videoMetadataReady = true;
+    flushPendingInitialSync();
+  });
+
+  audioEl.addEventListener("loadedmetadata", () => {
+    audioMetadataReady = true;
+    if (dualSyncActive && videoEl.readyState >= 1) {
+      const diff = Math.abs((audioEl.currentTime || 0) - (videoEl.currentTime || 0));
+      if (diff > 0.3) audioEl.currentTime = videoEl.currentTime || 0;
+    }
+    flushPendingInitialSync();
+  });
+
   videoEl.addEventListener("error", () => {
     videoBuffering = false;
     reportBufferStateToRoom(false);
@@ -568,11 +681,16 @@ if (!hasNativeAndroidPlayer) {
       loadUnifiedPlayback(lastLoadedPlayback, lastLoadedTitle, false, {
         autoPlay: true,
         forceProxy: true,
+        initialSync: lastKnownRoomSync,
       });
+    } else if (!hasAttemptedGuestExtraction && lastLoadedSourceUrl && myClientId && myClientId !== roomHostId) {
+      hasAttemptedGuestExtraction = true;
+      extractGuestFromServerApi(lastLoadedSourceUrl);
     }
   });
 
   videoEl.addEventListener("play", () => {
+    if (autoplayOverlay) autoplayOverlay.classList.add("hidden");
     if (dualSyncActive) {
       audioEl.currentTime = videoEl.currentTime;
       audioEl.playbackRate = videoEl.playbackRate;
@@ -583,6 +701,7 @@ if (!hasNativeAndroidPlayer) {
 
   videoEl.addEventListener("pause", () => {
     if (dualSyncActive) audioEl.pause();
+    if (videoEl.ended || videoEl.readyState === 0) return;
     if (!videoBuffering && !audioBuffering && !pausedByBarrier) {
       emitRoomSync("pause");
     }
@@ -655,6 +774,54 @@ if (!hasNativeAndroidPlayer) {
   });
 }
 
+async function extractGuestFromServerApi(sourceUrl) {
+  if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl)) return;
+  try {
+    roomSyncLog.textContent = "Re-extracting stream from source URL...";
+    roomSyncLog.classList.remove("hidden");
+    updateStatusStripVisibility();
+    const res = await fetch("/api/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: sourceUrl }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.default_stream) {
+      throw new Error(data.detail || "No stream returned");
+    }
+    let chosen = data.default_stream;
+    if (
+      lastLoadedPlayback &&
+      lastLoadedPlayback.mode === "paired" &&
+      data.video_only_formats &&
+      data.video_only_formats.length &&
+      data.audio_only_formats &&
+      data.audio_only_formats.length
+    ) {
+      const v = data.video_only_formats[0];
+      const a = data.audio_only_formats[0];
+      chosen = {
+        mode: "paired",
+        video_url: v.url,
+        audio_url: a.url,
+        is_hls: v.is_hls,
+        is_dash: v.is_dash,
+        label: `${v.resolution || v.ext} (Unified Video + Audio)`,
+      };
+    }
+    loadUnifiedPlayback(chosen, data.title || lastLoadedTitle, false, {
+      autoPlay: lastKnownRoomSync ? Boolean(lastKnownRoomSync.is_playing) : true,
+      sourceUrl: data.source_url || sourceUrl,
+      isGuestReExtracted: true,
+      initialSync: lastKnownRoomSync,
+    });
+  } catch (err) {
+    roomSyncLog.textContent = `Could not load stream (${err.message}).`;
+    roomSyncLog.classList.remove("hidden");
+    updateStatusStripVisibility();
+  }
+}
+
 function tryGuestLocalExtraction(reason = "", fallbackPlayback = null) {
   if (hasAttemptedGuestExtraction || !lastLoadedSourceUrl) return false;
   if (!lastLoadedSourceUrl.startsWith("http://") && !lastLoadedSourceUrl.startsWith("https://")) return false;
@@ -677,40 +844,64 @@ function tryGuestLocalExtraction(reason = "", fallbackPlayback = null) {
             autoPlay: lastKnownRoomSync ? Boolean(lastKnownRoomSync.is_playing) : true,
             sourceUrl: lastLoadedSourceUrl,
             isGuestReExtracted: true,
-          }).then(() => {
-            if (lastKnownRoomSync) {
-              setTimeout(() => {
-                applyRemoteSync(
-                  lastKnownRoomSync.is_playing,
-                  lastKnownRoomSync.position,
-                  lastKnownRoomSync.playback_rate,
-                  {
-                    serverTs: lastKnownRoomSync.server_ts,
-                    logText: "Synced with room (fresh local IP stream)",
-                  }
-                );
-              }, 350);
-            }
+            initialSync: lastKnownRoomSync
+              ? { ...lastKnownRoomSync, logText: "Synced with room (fresh local IP stream)" }
+              : null,
           });
         } else if (fallbackPlayback && fallbackPlayback.video_url) {
-          roomSyncLog.textContent = "Local extraction timed out — falling back to direct stream...";
+          roomSyncLog.textContent = "Local extraction timed out — falling back to copied room stream...";
           roomSyncLog.classList.remove("hidden");
           updateStatusStripVisibility();
           loadUnifiedPlayback(fallbackPlayback, lastLoadedTitle, false, {
             autoPlay: lastKnownRoomSync ? Boolean(lastKnownRoomSync.is_playing) : true,
             sourceUrl: lastLoadedSourceUrl,
             isGuestReExtracted: true,
+            initialSync: lastKnownRoomSync
+              ? { ...lastKnownRoomSync, logText: "Synced with copied room stream" }
+              : null,
           });
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (fallbackPlayback && fallbackPlayback.video_url) {
+          loadUnifiedPlayback(fallbackPlayback, lastLoadedTitle, false, {
+            autoPlay: lastKnownRoomSync ? Boolean(lastKnownRoomSync.is_playing) : true,
+            sourceUrl: lastLoadedSourceUrl,
+            isGuestReExtracted: true,
+            initialSync: lastKnownRoomSync,
+          });
+        }
+      });
     return true;
   }
   return false;
 }
 
+window.onGuestNativeExtractFailed = (reason = "") => {
+  if (lastLoadedPlayback && lastLoadedPlayback.video_url) {
+    roomSyncLog.textContent = `Local extract ${reason || "timed out"} — loading copied room stream...`;
+    roomSyncLog.classList.remove("hidden");
+    updateStatusStripVisibility();
+    loadUnifiedPlayback(lastLoadedPlayback, lastLoadedTitle, false, {
+      autoPlay: lastKnownRoomSync ? Boolean(lastKnownRoomSync.is_playing) : true,
+      sourceUrl: lastLoadedSourceUrl,
+      isGuestReExtracted: true,
+      initialSync: lastKnownRoomSync
+        ? { ...lastKnownRoomSync, logText: "Synced with copied room stream" }
+        : null,
+    });
+  } else {
+    roomSyncLog.textContent = `Stream extraction failed (${reason || "timeout"}).`;
+    roomSyncLog.classList.remove("hidden");
+    updateStatusStripVisibility();
+  }
+};
+
 window.onGuestNativeReExtracted = (payload) => {
-  if (!payload || !payload.video_url) return;
+  if (!payload || !payload.video_url) {
+    window.onGuestNativeExtractFailed("empty stream");
+    return;
+  }
   const media = buildExtensionPlayback(
     payload.video_url,
     payload.audio_url || "",
@@ -727,20 +918,10 @@ window.onGuestNativeReExtracted = (payload) => {
     alreadyLoadedNative: Boolean(payload.already_loaded_native),
     sourceUrl: lastLoadedSourceUrl,
     isGuestReExtracted: true,
+    initialSync: lastKnownRoomSync
+      ? { ...lastKnownRoomSync, logText: "Stream refreshed for your IP & synced" }
+      : null,
   });
-  if (lastKnownRoomSync) {
-    setTimeout(() => {
-      applyRemoteSync(
-        lastKnownRoomSync.is_playing,
-        lastKnownRoomSync.position,
-        lastKnownRoomSync.playback_rate,
-        {
-          serverTs: lastKnownRoomSync.server_ts,
-          logText: "Stream refreshed for your IP & synced",
-        }
-      );
-    }, 300);
-  }
 };
 
 // ---------- Native Android ExoPlayer Event Callback ----------
@@ -749,9 +930,17 @@ window.onNativePlayerEvent = (payload) => {
   if (!payload || !payload.event) return;
   window.__nativePlayerState = payload;
 
+  if (payload.event === "ready") {
+    flushPendingInitialSync();
+    return;
+  }
   if (payload.event === "playback_error") {
     reportBufferStateToRoom(false);
-    tryGuestLocalExtraction("ExoPlayer 403/IP token");
+    if (!tryGuestLocalExtraction("ExoPlayer 403/IP token")) {
+      roomSyncLog.textContent = "ExoPlayer could not play this stream (expired/IP-locked).";
+      roomSyncLog.classList.remove("hidden");
+      updateStatusStripVisibility();
+    }
     return;
   }
   if (payload.event === "buffering_start") {
@@ -862,9 +1051,12 @@ function applyRemoteSync(isPlaying, rawPosition, playbackRate, options = {}) {
         if (dualSyncActive) audioEl.currentTime = targetPos;
       }
       if (isPlaying && videoEl.paused) {
-        videoEl.play().catch((err) => {
+        videoEl.play().then(() => {
+          if (autoplayOverlay) autoplayOverlay.classList.add("hidden");
+        }).catch((err) => {
           if (err && err.name === "NotAllowedError") {
-            roomSyncLog.textContent = "Browser blocked autoplay — click Play on the video to sync!";
+            if (autoplayOverlay) autoplayOverlay.classList.remove("hidden");
+            roomSyncLog.textContent = "Browser blocked autoplay — tap the button on video to sync!";
             roomSyncLog.classList.remove("hidden");
             updateStatusStripVisibility();
           }
@@ -941,12 +1133,12 @@ function updateRoomPermissionsUI() {
     waitingHostBanner.classList.add("hidden");
   }
 
-  const modeText = roomControlMode === "host_only" ? "🔒 Controls: Host Only" : "🔓 Controls: Everyone";
+  const modeText = roomControlMode === "host_only" ? "🔒 Controls: Admin Only" : "🔓 Controls: Everyone";
   controlModeLabel.textContent = modeText;
   toggleControlModeBtn.classList.toggle("hidden", !isHost);
   if (isHost) {
     toggleControlModeBtn.textContent =
-      roomControlMode === "host_only" ? "Unlock for All" : "Lock to Host Only";
+      roomControlMode === "host_only" ? "Unlock for All" : "Lock to Admin Only";
   }
 }
 
@@ -956,7 +1148,7 @@ toggleControlModeBtn.addEventListener("click", () => {
   ws.send(JSON.stringify({ type: "set_control_mode", control_mode: nextMode }));
 });
 
-function appendChat(nickname, text, isSystem = false) {
+function appendChat(nickname, text, isSystem = false, role = null) {
   const el = document.createElement("div");
   if (isSystem) {
     el.className = "chat-sys";
@@ -964,7 +1156,8 @@ function appendChat(nickname, text, isSystem = false) {
   } else {
     el.className = "chat-msg";
     const strong = document.createElement("strong");
-    strong.textContent = `${nickname}: `;
+    const roleTag = role === "admin" ? " (Admin)" : role === "guest" ? " (Guest)" : "";
+    strong.textContent = `${nickname}${roleTag}: `;
     el.append(strong, document.createTextNode(text));
   }
   chatMessages.appendChild(el);
@@ -976,8 +1169,9 @@ function renderMembers(members) {
   memberList.innerHTML = "";
   members.forEach((m) => {
     const pill = document.createElement("span");
-    pill.className = m.is_host ? "pill pill-accent" : "pill";
-    const suffix = m.is_host ? " (Host)" : "";
+    const isAdminMember = m.role === "admin" || m.is_host;
+    pill.className = isAdminMember ? "pill pill-accent" : "pill";
+    const suffix = isAdminMember ? " (Admin)" : " (Guest)";
     const bufTag = m.is_buffering ? " ⏳" : "";
     pill.textContent = `${m.nickname}${suffix}${bufTag}`;
     memberList.appendChild(pill);
@@ -1073,9 +1267,10 @@ function connectToRoom(roomId) {
     } catch (_) {}
   }
 
-  const nick = encodeURIComponent(nicknameInput.value.trim() || "Guest");
+  const rawNick = nicknameInput.value.trim();
   const proto = window.location.protocol === "https:" ? "wss" : "ws";
-  const socket = new WebSocket(`${proto}://${window.location.host}/ws/rooms/${code}?nickname=${nick}`);
+  const query = rawNick ? `?nickname=${encodeURIComponent(rawNick)}` : "";
+  const socket = new WebSocket(`${proto}://${window.location.host}/ws/rooms/${code}${query}`);
   ws = socket;
 
   socket.onopen = () => {
@@ -1117,7 +1312,7 @@ function connectToRoom(roomId) {
       }
 
       renderMembers(msg.members || []);
-      (msg.chat_history || []).forEach((c) => appendChat(c.nickname, c.text));
+      (msg.chat_history || []).forEach((c) => appendChat(c.nickname, c.text, false, c.role));
 
       if (pendingMediaBroadcast) {
         const queued = pendingMediaBroadcast;
@@ -1125,15 +1320,22 @@ function connectToRoom(roomId) {
         socket.send(JSON.stringify(queued));
       } else if (msg.media && msg.media.playback) {
         const isGuestWithApp = Boolean(myClientId && myClientId !== roomHostId && (hasNativeAndroidPlayer || hasDesktopProxy));
-        const hasValidSourceUrl = Boolean(msg.media.source_url && /^https?:\/\//i.test(msg.media.source_url));
+        const hasDistinctSourceUrl = Boolean(
+          msg.media.source_url &&
+            /^https?:\/\//i.test(msg.media.source_url) &&
+            msg.media.source_url !== msg.media.playback.video_url
+        );
         lastKnownRoomSync = {
           is_playing: Boolean(msg.is_playing),
           position: Number(msg.position || 0),
           playback_rate: Number(msg.playback_rate || 1.0),
           server_ts: msg.server_ts || Date.now() / 1000,
+          buffering_active: Boolean(msg.buffering_active),
+          waiting_for: msg.waiting_for || [],
+          sync_seq: msg.sync_seq,
         };
-        if (isGuestWithApp && hasValidSourceUrl) {
-          // Always extract a fresh IP-bound stream locally in Guest's embedded browser first!
+        if (isGuestWithApp && hasDistinctSourceUrl) {
+          // Always extract a fresh IP-bound stream locally in Guest's embedded browser first (with guaranteed fallback to copied stream!)
           lastLoadedSourceUrl = msg.media.source_url;
           lastLoadedTitle = msg.media.title || "Synced Stream";
           lastLoadedPlayback = msg.media.playback;
@@ -1147,28 +1349,16 @@ function connectToRoom(roomId) {
           tryGuestLocalExtraction("syncing stream for your IP", msg.media.playback);
         } else {
           loadUnifiedPlayback(msg.media.playback, msg.media.title, false, {
+            autoPlay: Boolean(msg.is_playing),
             sourceUrl: msg.media.source_url || "",
+            initialSync: {
+              ...lastKnownRoomSync,
+              logText: "Synced with room",
+            },
           });
-          setTimeout(() => {
-            if (msg.buffering_active) {
-              handleBufferBarrier({
-                active: true,
-                waiting_for: msg.waiting_for,
-                position: msg.position,
-                playback_rate: msg.playback_rate,
-                sync_seq: msg.sync_seq,
-              });
-            } else {
-              applyRemoteSync(msg.is_playing, msg.position, msg.playback_rate, {
-                serverTs: msg.server_ts,
-                syncSeq: msg.sync_seq,
-                logText: "Synced with room",
-              });
-            }
-          }, 300);
         }
       } else if (myClientId && myClientId === roomHostId && lastLoadedPlayback) {
-        // Host already loaded a stream before creating/reconnecting to the room -> broadcast it immediately!
+        // Admin already loaded a stream before creating/reconnecting to the room -> broadcast it immediately!
         const st = getActivePlaybackState();
         socket.send(
           JSON.stringify({
@@ -1176,7 +1366,7 @@ function connectToRoom(roomId) {
             auto_play: st.isPlaying,
             media: {
               title: lastLoadedTitle || "Untitled Stream",
-              source_url: currentData ? currentData.source_url : "",
+              source_url: lastLoadedSourceUrl || (currentData ? currentData.source_url : ""),
               playback: lastLoadedPlayback,
             },
           })
@@ -1209,15 +1399,20 @@ function connectToRoom(roomId) {
       if (msg.media && msg.media.playback) {
         const loadedByMeOnNative = hasNativeAndroidPlayer && msg.sender_id && msg.sender_id === myClientId;
         const isGuestWithApp = Boolean(myClientId && myClientId !== roomHostId && (hasNativeAndroidPlayer || hasDesktopProxy));
-        const hasValidSourceUrl = Boolean(msg.media.source_url && /^https?:\/\//i.test(msg.media.source_url));
+        const hasDistinctSourceUrl = Boolean(
+          msg.media.source_url &&
+            /^https?:\/\//i.test(msg.media.source_url) &&
+            msg.media.source_url !== msg.media.playback.video_url
+        );
         lastKnownRoomSync = {
           is_playing: Boolean(msg.is_playing),
           position: Number(msg.position || 0),
           playback_rate: Number(msg.playback_rate || 1.0),
           server_ts: msg.server_ts || Date.now() / 1000,
+          sync_seq: msg.sync_seq,
         };
         if (!loadedByMeOnNative) {
-          if (isGuestWithApp && hasValidSourceUrl) {
+          if (isGuestWithApp && hasDistinctSourceUrl) {
             lastLoadedSourceUrl = msg.media.source_url;
             lastLoadedTitle = msg.media.title || "Synced Stream";
             lastLoadedPlayback = msg.media.playback;
@@ -1233,33 +1428,52 @@ function connectToRoom(roomId) {
             loadUnifiedPlayback(msg.media.playback, msg.media.title, false, {
               autoPlay: Boolean(msg.is_playing),
               sourceUrl: msg.media.source_url || "",
-            });
-            setTimeout(() => {
-              applyRemoteSync(msg.is_playing, msg.position, msg.playback_rate, {
-                serverTs: msg.server_ts,
-                syncSeq: msg.sync_seq,
+              initialSync: {
+                ...lastKnownRoomSync,
                 logText: `${msg.by} loaded: ${msg.media.title}`,
-              });
-            }, 250);
+              },
+            });
           }
         } else if (typeof msg.sync_seq === "number") {
           lastAppliedSyncSeq = msg.sync_seq;
         }
-        appendChat("", `${msg.by} loaded "${msg.media.title}"`, true);
+        const roleTag = msg.by_role === "admin" ? " (Admin)" : msg.by_role === "guest" ? " (Guest)" : "";
+        appendChat("", `${msg.by}${roleTag} loaded "${msg.media.title}"`, true);
       }
       return;
     }
 
     if (msg.type === "sync") {
+      if (pendingInitialSync) {
+        pendingInitialSync = {
+          ...pendingInitialSync,
+          is_playing: Boolean(msg.is_playing),
+          position: Number(msg.position || 0),
+          playback_rate: Number(msg.playback_rate || 1.0),
+          server_ts: msg.server_ts || Date.now() / 1000,
+          sync_seq: msg.sync_seq,
+        };
+      }
+      const roleTag = msg.by_role === "admin" ? " (Admin)" : msg.by_role === "guest" ? " (Guest)" : "";
       applyRemoteSync(msg.is_playing, msg.position, msg.playback_rate, {
         serverTs: msg.server_ts,
         syncSeq: msg.sync_seq,
-        logText: `${msg.by}: ${msg.action} @ ${formatDuration(msg.position)}`,
+        logText: `${msg.by}${roleTag}: ${msg.action} @ ${formatDuration(msg.position)}`,
       });
       return;
     }
 
     if (msg.type === "heartbeat") {
+      if (pendingInitialSync) {
+        pendingInitialSync = {
+          ...pendingInitialSync,
+          is_playing: Boolean(msg.is_playing),
+          position: Number(msg.position || 0),
+          playback_rate: Number(msg.playback_rate || 1.0),
+          server_ts: msg.server_ts || Date.now() / 1000,
+          sync_seq: msg.sync_seq,
+        };
+      }
       applyRemoteSync(msg.is_playing, msg.position, msg.playback_rate, {
         serverTs: msg.server_ts,
         syncSeq: msg.sync_seq,
@@ -1277,13 +1491,13 @@ function connectToRoom(roomId) {
       applyRemoteSync(msg.is_playing, msg.position, msg.playback_rate, {
         serverTs: msg.server_ts,
         syncSeq: msg.sync_seq,
-        logText: msg.reason || "Host-only control active",
+        logText: msg.reason || "Admin-only control active",
       });
       return;
     }
 
     if (msg.type === "chat" && msg.message) {
-      appendChat(msg.message.nickname, msg.message.text);
+      appendChat(msg.message.nickname, msg.message.text, false, msg.message.role);
     }
   };
 
@@ -1617,7 +1831,10 @@ function renderResult(data) {
   }
 
   if (data.default_stream) {
-    loadUnifiedPlayback(data.default_stream, data.title, true);
+    loadUnifiedPlayback(data.default_stream, data.title, true, {
+      autoPlay: true,
+      sourceUrl: data.source_url || "",
+    });
   }
 }
 

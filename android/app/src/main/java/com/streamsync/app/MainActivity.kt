@@ -19,6 +19,7 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -59,10 +60,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var browserGeckoView: GeckoView
     private lateinit var etUrl: EditText
     private lateinit var btnShield: Button
-    private lateinit var btnTabRoom: Button
-    private lateinit var btnTabBrowser: Button
-    private lateinit var btnStreams: Button
-    private lateinit var btnUpdate: Button
+    private lateinit var btnTabRoom: LinearLayout
+    private lateinit var btnTabBrowser: LinearLayout
+    private lateinit var btnStreams: LinearLayout
+    private lateinit var btnUpdate: LinearLayout
+    private lateinit var tvStreamLabel: TextView
+    private lateinit var tvUpdateLabel: TextView
 
     private lateinit var adBlockEngine: AdBlockEngine
     private lateinit var streamSniffer: StreamSniffer
@@ -100,6 +103,8 @@ class MainActivity : AppCompatActivity() {
         btnTabBrowser = findViewById(R.id.btnTabBrowser)
         btnStreams = findViewById(R.id.btnStreams)
         btnUpdate = findViewById(R.id.btnUpdate)
+        tvStreamLabel = findViewById(R.id.tvStreamLabel)
+        tvUpdateLabel = findViewById(R.id.tvUpdateLabel)
         val btnGo: Button = findViewById(R.id.btnGo)
 
         val defaultServer = "https://streamsync-pj98.onrender.com/"
@@ -241,7 +246,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateStreamsButton() {
-        btnStreams.text = "Streams (${latestStreams.size})"
+        tvStreamLabel.text = "Stream"
+        btnStreams.isSelected = latestStreams.isNotEmpty()
     }
 
     private fun updateShieldButton() {
@@ -271,8 +277,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateTabStyles() {
-        btnTabRoom.alpha = if (showingRoom) 1.0f else 0.55f
-        btnTabBrowser.alpha = if (!showingRoom) 1.0f else 0.55f
+        btnTabRoom.isSelected = showingRoom
+        btnTabBrowser.isSelected = !showingRoom
     }
 
     private fun applyFullscreenMode(fullscreen: Boolean) {
@@ -463,11 +469,16 @@ class MainActivity : AppCompatActivity() {
         currentBrowserUrl = sourceUrl
         streamSniffer.clearForNewTopLevelPage(sourceUrl)
         adBlockEngine.resetPageCounter()
+        // Keep GeckoView INVISIBLE (rather than GONE) while extracting so Gecko media/iframe timers run normally
+        if (showingRoom) {
+            browserGeckoView.visibility = View.INVISIBLE
+        }
         geckoBrowser.setGuestAutoPlayMode(true)
         geckoBrowser.loadUrl(sourceUrl)
 
         val handler = android.os.Handler(android.os.Looper.getMainLooper())
         val startMs = System.currentTimeMillis()
+        var firstCandidateMs = 0L
         val poller = object : Runnable {
             override fun run() {
                 val list = latestStreams.filter { !it.isDrmProtected }
@@ -481,17 +492,25 @@ class MainActivity : AppCompatActivity() {
                 if (wantPaired && videoOnly.isNotEmpty() && audioOnly.isNotEmpty()) {
                     chosenVideo = videoOnly.first()
                     chosenAudio = audioOnly.first()
-                } else if (combined.isNotEmpty()) {
-                    chosenVideo = combined.first()
-                } else if (videoOnly.isNotEmpty() && audioOnly.isNotEmpty()) {
-                    chosenVideo = videoOnly.first()
-                    chosenAudio = audioOnly.first()
+                } else if (combined.isNotEmpty() || (videoOnly.isNotEmpty() && audioOnly.isNotEmpty())) {
+                    if (firstCandidateMs == 0L) firstCandidateMs = System.currentTimeMillis()
+                    if (!wantPaired || System.currentTimeMillis() - firstCandidateMs >= 1800L) {
+                        if (videoOnly.isNotEmpty() && audioOnly.isNotEmpty()) {
+                            chosenVideo = videoOnly.first()
+                            chosenAudio = audioOnly.first()
+                        } else if (combined.isNotEmpty()) {
+                            chosenVideo = combined.first()
+                        }
+                    }
                 }
 
                 if (chosenVideo != null) {
                     // Stop hidden GeckoView page immediately so there is ZERO background audio bleed
                     geckoBrowser.setGuestAutoPlayMode(false)
                     geckoBrowser.loadUrl("about:blank")
+                    if (showingRoom) {
+                        browserGeckoView.visibility = View.GONE
+                    }
 
                     val mergedHeaders = LinkedHashMap<String, String>(chosenVideo.requestHeaders)
                     if (chosenAudio != null) {
@@ -534,6 +553,14 @@ class MainActivity : AppCompatActivity() {
                     handler.postDelayed(this, 500L)
                 } else {
                     geckoBrowser.setGuestAutoPlayMode(false)
+                    geckoBrowser.loadUrl("about:blank")
+                    if (showingRoom) {
+                        browserGeckoView.visibility = View.GONE
+                    }
+                    roomWebView.evaluateJavascript(
+                        "if (window.onGuestNativeExtractFailed) { window.onGuestNativeExtractFailed('timeout'); }",
+                        null
+                    )
                 }
             }
         }
@@ -542,7 +569,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun checkForUpdates() {
         btnUpdate.isEnabled = false
-        btnUpdate.text = "Checking..."
+        tvUpdateLabel.text = "Check..."
         val currentBuild = BuildConfig.VERSION_CODE
         val currentVersion = BuildConfig.VERSION_NAME
 
@@ -594,7 +621,7 @@ class MainActivity : AppCompatActivity() {
 
                 runOnUiThread {
                     btnUpdate.isEnabled = true
-                    btnUpdate.text = "Update"
+                    tvUpdateLabel.text = "Update"
                     if (remoteBuild <= currentBuild) {
                         AlertDialog.Builder(this)
                             .setTitle("App Up to Date")
@@ -617,7 +644,7 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 runOnUiThread {
                     btnUpdate.isEnabled = true
-                    btnUpdate.text = "Update"
+                    tvUpdateLabel.text = "Update"
                     Toast.makeText(
                         this,
                         "Update check failed (v$currentVersion build $currentBuild): ${e.message}",
@@ -639,9 +666,29 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = false
+            max = 100
+            progress = 0
+        }
+        val progressText = TextView(this).apply {
+            text = "0% (0.0 MB)"
+            setPadding(0, 0, 0, 12)
+        }
+        val dialogLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 32, 48, 24)
+            addView(progressText)
+            addView(progressBar)
+        }
+        val progressDialog = AlertDialog.Builder(this)
+            .setTitle("Downloading build $remoteBuild")
+            .setView(dialogLayout)
+            .setCancelable(false)
+            .show()
+
         btnUpdate.isEnabled = false
-        btnUpdate.text = "Downloading..."
-        Toast.makeText(this, "Downloading build $remoteBuild...", Toast.LENGTH_SHORT).show()
+        tvUpdateLabel.text = "0%"
 
         networkExecutor.execute {
             try {
@@ -653,21 +700,55 @@ class MainActivity : AppCompatActivity() {
                     connectTimeout = 15_000
                     readTimeout = 30_000
                 }
+                val totalBytes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    conn.contentLengthLong
+                } else {
+                    conn.contentLength.toLong()
+                }
+
                 conn.inputStream.use { input ->
                     apkFile.outputStream().use { output ->
-                        input.copyTo(output)
+                        val buffer = ByteArray(8192)
+                        var downloaded = 0L
+                        var lastPct = -1
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read <= 0) break
+                            output.write(buffer, 0, read)
+                            downloaded += read
+
+                            val pct = if (totalBytes > 0) ((downloaded * 100L) / totalBytes).toInt().coerceIn(0, 100) else -1
+                            if (pct != lastPct) {
+                                lastPct = pct
+                                val mbDone = downloaded / (1024f * 1024f)
+                                val mbTotal = if (totalBytes > 0) totalBytes / (1024f * 1024f) else 0f
+                                runOnUiThread {
+                                    if (pct >= 0) {
+                                        progressBar.isIndeterminate = false
+                                        progressBar.progress = pct
+                                        progressText.text = String.format("%d%% (%.1f / %.1f MB)", pct, mbDone, mbTotal)
+                                        tvUpdateLabel.text = "$pct%"
+                                    } else {
+                                        progressBar.isIndeterminate = true
+                                        progressText.text = String.format("Downloading... %.1f MB", mbDone)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
                 runOnUiThread {
+                    progressDialog.dismiss()
                     btnUpdate.isEnabled = true
-                    btnUpdate.text = "Update"
+                    tvUpdateLabel.text = "Update"
                     installApkFile(apkFile)
                 }
             } catch (e: Exception) {
                 runOnUiThread {
+                    progressDialog.dismiss()
                     btnUpdate.isEnabled = true
-                    btnUpdate.text = "Update"
+                    tvUpdateLabel.text = "Update"
                     Toast.makeText(this, "Download failed: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }

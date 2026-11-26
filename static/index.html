@@ -93,10 +93,15 @@
         </div>
 
         <div id="waiting-host-banner" class="waiting-host-banner hidden" role="status">
-          Waiting for Room Host to start a synchronized stream...
+          Waiting for Room Admin to start a synchronized stream...
         </div>
 
-        <video id="video-player" controls playsinline></video>
+        <div class="player-stage">
+          <video id="video-player" controls playsinline></video>
+          <button id="autoplay-overlay" type="button" class="autoplay-overlay hidden">
+            ▶ Tap to Start &amp; Sync with Room
+          </button>
+        </div>
         <audio id="audio-player" preload="auto"></audio>
 
         <div id="manifest-audio-bar" class="pair-selects hidden">
@@ -148,7 +153,7 @@
 
       <div class="room-control-row">
         <span id="control-mode-label" class="pill">Controls: Everyone</span>
-        <button id="toggle-control-mode-btn" type="button" class="btn-sm btn-secondary hidden">Lock to Host Only</button>
+        <button id="toggle-control-mode-btn" type="button" class="btn-sm btn-secondary hidden">Lock to Admin Only</button>
       </div>
 
       <div id="member-list" class="member-list"></div>

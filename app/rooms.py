@@ -73,12 +73,16 @@ class RoomState:
             return client_id in self.members
         return client_id == self.host_id
 
+    def role_for(self, client_id: str) -> str:
+        return "admin" if client_id == self.host_id else "guest"
+
     def member_list(self) -> list[dict[str, Any]]:
         return [
             {
                 "client_id": m.client_id,
                 "nickname": m.nickname,
                 "is_host": m.client_id == self.host_id,
+                "role": self.role_for(m.client_id),
                 "is_buffering": m.client_id in self.buffering_members,
             }
             for m in self.members.values()
@@ -93,6 +97,7 @@ class RoomState:
             "room_id": self.room_id,
             "client_id": viewer_id,
             "host_id": self.host_id,
+            "role": self.role_for(viewer_id),
             "control_mode": self.control_mode,
             "media": self.media,
             "is_playing": self.is_playing,
@@ -135,7 +140,7 @@ class RoomManager:
             "control_mode": room.control_mode,
         }
 
-    async def set_media_http(self, room_id: str, media: dict[str, Any], auto_play: bool = True, sender_name: str = "Host") -> dict[str, Any]:
+    async def set_media_http(self, room_id: str, media: dict[str, Any], auto_play: bool = True, sender_name: str = "Admin") -> dict[str, Any]:
         code = room_id.strip().upper()
         room = self.rooms.get(code)
         if room is None:
@@ -217,14 +222,19 @@ class RoomManager:
 
         await websocket.accept()
         client_id = secrets.token_hex(6)
-        clean_name = (nickname or "").strip()[:24] or f"Guest-{client_id[:4]}"
+        is_creator = room.host_id is None
+        raw_nick = (nickname or "").strip()
+        if raw_nick.lower() == "guest" and is_creator:
+            raw_nick = ""
+        clean_name = raw_nick[:24] or ("Admin" if is_creator else f"Guest-{client_id[:4]}")
 
         member = RoomMember(client_id=client_id, nickname=clean_name, websocket=websocket)
         room.members[client_id] = member
-        if room.host_id is None:
+        if is_creator:
             room.host_id = client_id
 
         await self._send_safe(websocket, room.snapshot(client_id))
+        role_label = "Admin" if room.role_for(client_id) == "admin" else "Guest"
         await self.broadcast(
             room,
             {
@@ -232,7 +242,7 @@ class RoomManager:
                 "host_id": room.host_id,
                 "control_mode": room.control_mode,
                 "members": room.member_list(),
-                "system_message": f"{clean_name} joined the room.",
+                "system_message": f"{clean_name} ({role_label}) joined the room.",
             },
             exclude_id=client_id,
         )
@@ -244,6 +254,7 @@ class RoomManager:
         if not room:
             return
 
+        was_admin = room.host_id == client_id
         removed = room.members.pop(client_id, None)
         was_buffering = room.buffering_members.pop(client_id, None) is not None
 
@@ -251,10 +262,11 @@ class RoomManager:
             self.rooms.pop(code, None)
             return
 
-        if room.host_id == client_id:
+        if was_admin:
             room.host_id = next(iter(room.members))
 
         if removed:
+            old_role = "Admin" if was_admin else "Guest"
             await self.broadcast(
                 room,
                 {
@@ -262,7 +274,7 @@ class RoomManager:
                     "host_id": room.host_id,
                     "control_mode": room.control_mode,
                     "members": room.member_list(),
-                    "system_message": f"{removed.nickname} left the room.",
+                    "system_message": f"{removed.nickname} ({old_role}) left the room.",
                 },
             )
 
@@ -336,7 +348,7 @@ class RoomManager:
                     sender.websocket,
                     {
                         "type": "sync_denied",
-                        "reason": "Only the room Host can change control permissions.",
+                        "reason": "Only the room Admin can change control permissions.",
                         "control_mode": room.control_mode,
                         "is_playing": room.is_playing,
                         "position": round(room.current_position(now), 3),
@@ -356,8 +368,8 @@ class RoomManager:
                         "control_mode": room.control_mode,
                         "by": sender.nickname,
                         "system_message": (
-                            f"{sender.nickname} set playback controls to "
-                            f"{'Host Only' if room.control_mode == 'host_only' else 'Everyone'}."
+                            f"{sender.nickname} (Admin) set playback controls to "
+                            f"{'Admin Only' if room.control_mode == 'host_only' else 'Everyone'}."
                         ),
                     },
                 )
@@ -369,7 +381,7 @@ class RoomManager:
                     sender.websocket,
                     {
                         "type": "sync_denied",
-                        "reason": "Host-only playback control is active.",
+                        "reason": "Admin-only playback control is active.",
                         "control_mode": room.control_mode,
                         "is_playing": room.is_playing,
                         "position": round(room.current_position(now), 3),
@@ -404,10 +416,20 @@ class RoomManager:
                 playback_clean["headers"] = sanitized_headers
 
             auto_play = bool(data.get("auto_play", False))
+            tracks_snapshot = media.get("tracks_snapshot")
+            clean_snapshot = None
+            if isinstance(tracks_snapshot, dict):
+                clean_snapshot = {
+                    k: tracks_snapshot[k][:15]
+                    for k in ("combined_formats", "video_only_formats", "audio_only_formats")
+                    if isinstance(tracks_snapshot.get(k), list)
+                } or None
+
             room.media = {
                 "title": str(media.get("title") or "Untitled Stream")[:160],
                 "source_url": str(media.get("source_url") or ""),
                 "playback": playback_clean,
+                "tracks_snapshot": clean_snapshot,
             }
             room.buffering_members.clear()
             room.is_playing = auto_play
@@ -427,6 +449,7 @@ class RoomManager:
                     "playback_rate": room.playback_rate,
                     "sync_seq": room.sync_seq,
                     "by": sender.nickname,
+                    "by_role": room.role_for(client_id),
                     "sender_id": client_id,
                     "server_ts": room.updated_at,
                 },
@@ -439,7 +462,7 @@ class RoomManager:
                     sender.websocket,
                     {
                         "type": "sync_denied",
-                        "reason": "Host-only playback control is active.",
+                        "reason": "Admin-only playback control is active.",
                         "control_mode": room.control_mode,
                         "is_playing": room.is_playing,
                         "position": round(room.current_position(now), 3),
@@ -484,6 +507,7 @@ class RoomManager:
                     "playback_rate": room.playback_rate,
                     "sync_seq": room.sync_seq,
                     "by": sender.nickname,
+                    "by_role": room.role_for(client_id),
                     "sender_id": client_id,
                     "server_ts": room.updated_at,
                 },
@@ -579,6 +603,7 @@ class RoomManager:
                 "id": secrets.token_hex(4),
                 "sender_id": client_id,
                 "nickname": sender.nickname,
+                "role": room.role_for(client_id),
                 "text": text,
                 "ts": now,
             }

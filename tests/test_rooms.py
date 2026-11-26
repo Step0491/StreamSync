@@ -30,15 +30,19 @@ def test_websocket_room_sync_media_and_chat():
         state1 = ws1.receive_json()
         assert state1["type"] == "room_state"
         assert state1["host_id"] == state1["client_id"]
+        assert state1["role"] == "admin"
         assert state1["control_mode"] == "everyone"
 
         # Alice receives notification that Bob joined
         joined_evt = ws1.receive_json()
         assert joined_evt["type"] == "members_updated"
         assert len(joined_evt["members"]) == 2
+        assert joined_evt["members"][0]["role"] == "admin"
+        assert joined_evt["members"][1]["role"] == "guest"
 
         state2 = ws2.receive_json()
         assert state2["type"] == "room_state"
+        assert state2["role"] == "guest"
         assert len(state2["members"]) == 2
 
         # Alice loads a seamlessly paired video+audio stream with Referer header hint
@@ -79,12 +83,13 @@ def test_websocket_room_sync_media_and_chat():
         assert sync_evt["position"] == 42.5
         assert sync_evt["by"] == "Alice"
 
-        # Bob sends a chat message -> both receive it
+        # Bob sends a chat message -> both receive it with guest role
         ws2.send_json({"type": "chat", "text": "Ciao Alice!"})
         c1 = ws1.receive_json()
         c2 = ws2.receive_json()
         assert c1["type"] == "chat"
         assert c1["message"]["text"] == "Ciao Alice!"
+        assert c1["message"]["role"] == "guest"
         assert c2["message"]["nickname"] == "Bob"
 
 

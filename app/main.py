@@ -229,7 +229,7 @@ async def post_room_media(room_id: str, payload: dict) -> dict:
         room_id=room_id,
         media=media,
         auto_play=bool(payload.get("auto_play", True)),
-        sender_name=str(payload.get("by") or "Host"),
+        sender_name=str(payload.get("by") or "Admin"),
     )
 
 
