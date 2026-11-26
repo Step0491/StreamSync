@@ -482,6 +482,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun extractStreamSilentlyForGuest(sourceUrl: String, wantPaired: Boolean) {
         currentBrowserUrl = sourceUrl
+        latestStreams = emptyList()
         streamSniffer.clearForNewTopLevelPage(sourceUrl)
         adBlockEngine.resetPageCounter()
         // Keep GeckoView INVISIBLE (rather than GONE) while extracting so Gecko media/iframe timers run normally
@@ -564,7 +565,8 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
 
-                if (System.currentTimeMillis() - startMs < 15_000L) {
+                geckoBrowser.setGuestAutoPlayMode(true)
+                if (System.currentTimeMillis() - startMs < 25_000L) {
                     handler.postDelayed(this, 500L)
                 } else {
                     geckoBrowser.setGuestAutoPlayMode(false)

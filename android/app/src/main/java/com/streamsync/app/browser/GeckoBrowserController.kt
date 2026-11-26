@@ -35,6 +35,9 @@ class GeckoBrowserController(
     private var nativePort: WebExtension.Port? = null
 
     @Volatile
+    private var guestAutoPlayPending: Boolean = false
+
+    @Volatile
     var currentUrl: String = "https://www.google.com"
         private set
 
@@ -148,6 +151,7 @@ class GeckoBrowserController(
                                     }
                                 })
                                 syncShieldStateToExtension(currentUrl)
+                                syncGuestAutoPlayToExtension()
                             }
                         },
                         "streamsync_bridge"
@@ -241,11 +245,16 @@ class GeckoBrowserController(
     }
 
     fun setGuestAutoPlayMode(active: Boolean) {
+        guestAutoPlayPending = active
+        syncGuestAutoPlayToExtension()
+    }
+
+    private fun syncGuestAutoPlayToExtension() {
         try {
             nativePort?.postMessage(
                 JSONObject().apply {
                     put("type", "set_guest_autoplay")
-                    put("active", active)
+                    put("active", guestAutoPlayPending)
                 }
             )
         } catch (_: Exception) {

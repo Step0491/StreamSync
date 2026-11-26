@@ -802,6 +802,7 @@ function tryGuestLocalExtraction(reason = "", fallbackPlayback = null) {
   if (hasAttemptedGuestExtraction || !lastLoadedSourceUrl) return false;
   if (!lastLoadedSourceUrl.startsWith("http://") && !lastLoadedSourceUrl.startsWith("https://")) return false;
   hasAttemptedGuestExtraction = true;
+  lastGuestExtractFailureReason = "";
 
   const wantPaired = Boolean((fallbackPlayback || lastLoadedPlayback) && (fallbackPlayback || lastLoadedPlayback).mode === "paired");
   roomSyncLog.textContent = `Loading stream via your IP (${reason || "local browser"})...`;
@@ -853,7 +854,10 @@ function tryGuestLocalExtraction(reason = "", fallbackPlayback = null) {
   return false;
 }
 
+let lastGuestExtractFailureReason = "";
+
 window.onGuestNativeExtractFailed = (reason = "") => {
+  lastGuestExtractFailureReason = reason || "timeout";
   if (lastLoadedPlayback && lastLoadedPlayback.video_url) {
     roomSyncLog.textContent = `Local extract ${reason || "timed out"} — loading copied room stream...`;
     roomSyncLog.classList.remove("hidden");
@@ -913,7 +917,9 @@ window.onNativePlayerEvent = (payload) => {
   if (payload.event === "playback_error") {
     reportBufferStateToRoom(false);
     if (!tryGuestLocalExtraction("ExoPlayer 403/IP token")) {
-      roomSyncLog.textContent = "ExoPlayer could not play this stream (expired/IP-locked).";
+      roomSyncLog.textContent = lastGuestExtractFailureReason
+        ? `Local extract (${lastGuestExtractFailureReason}) & ExoPlayer failed — open page in Browser tab and tap Play.`
+        : "ExoPlayer could not play this stream (expired/IP-locked).";
       roomSyncLog.classList.remove("hidden");
       updateStatusStripVisibility();
     }

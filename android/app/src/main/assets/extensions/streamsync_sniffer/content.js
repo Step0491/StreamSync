@@ -147,26 +147,34 @@
   }
 
   // 4. Silent Auto-Play inside all frames & cross-origin iframes when Guest is extracting a fresh stream
-  let autoPlayClicked = false;
+  let autoPlayAttempts = 0;
   function trySilentGuestAutoPlay() {
-    if (autoPlayClicked) return;
+    if (autoPlayAttempts >= 15) return;
     try {
       browser.runtime.sendMessage({ type: "query_guest_autoplay" }).then((resp) => {
-        if (!resp || !resp.active || autoPlayClicked) return;
+        if (!resp || !resp.active) {
+          autoPlayAttempts = 0;
+          return;
+        }
         const v = document.querySelector("video");
         if (v) {
           v.muted = true;
           v.volume = 0;
+          if (!v.paused && v.readyState >= 2) {
+            return;
+          }
           if (v.paused) {
             v.play().catch(() => {});
           }
         }
+        autoPlayAttempts++;
         const playBtn = document.querySelector(
-          ".vjs-big-play-button, .plyr__control--overlaid, .jw-icon-display, .jw-display-icon-container, button[aria-label*='play' i], .play-button, #play-btn"
+          ".vjs-big-play-button, .vjs-play-control, .plyr__control--overlaid, [data-plyr='play'], .jw-icon-display, .jw-display-icon-container, .jw-icon-playback, [aria-label*='play' i], [title*='play' i], .play-button, .play-btn, #play-btn, [class*='play-btn' i], [class*='playBtn' i]"
         );
         if (playBtn && typeof playBtn.click === "function") {
-          autoPlayClicked = true;
           playBtn.click();
+        } else if (v && typeof v.click === "function") {
+          v.click();
         }
       }).catch(() => {});
     } catch (_) {}
@@ -175,5 +183,5 @@
   setInterval(() => {
     scanYouTube();
     trySilentGuestAutoPlay();
-  }, 1500);
+  }, 1200);
 })();
