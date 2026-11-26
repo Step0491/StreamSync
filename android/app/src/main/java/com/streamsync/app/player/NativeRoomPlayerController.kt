@@ -46,7 +46,10 @@ class NativeRoomPlayerController(
     private val onExtractSourceUrlRequested: (sourceUrl: String, wantPaired: Boolean) -> Unit = { _, _ -> }
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
-    val exoPlayer: ExoPlayer = ExoPlayer.Builder(context).build()
+    val exoPlayer: ExoPlayer = ExoPlayer.Builder(context)
+        .setSeekBackIncrementMs(10_000L)
+        .setSeekForwardIncrementMs(10_000L)
+        .build()
 
     private var suppressOutboundEvents = false
     private var pausedByRoomBarrier = false
@@ -317,7 +320,7 @@ class NativeRoomPlayerController(
         try {
             block()
         } finally {
-            mainHandler.postDelayed({ suppressOutboundEvents = false }, 220L)
+            mainHandler.postDelayed({ suppressOutboundEvents = false }, 800L)
         }
     }
 

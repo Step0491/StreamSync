@@ -26,6 +26,8 @@ const waitingHostBanner = document.getElementById("waiting-host-banner");
 const videoEl = document.getElementById("video-player");
 const audioEl = document.getElementById("audio-player");
 const autoplayOverlay = document.getElementById("autoplay-overlay");
+const btnSeekBack10 = document.getElementById("btn-seek-back-10");
+const btnSeekFwd10 = document.getElementById("btn-seek-fwd-10");
 const manifestAudioBar = document.getElementById("manifest-audio-bar");
 const manifestAudioSelect = document.getElementById("manifest-audio-select");
 
@@ -1019,16 +1021,18 @@ function applyRemoteSync(isPlaying, rawPosition, playbackRate, options = {}) {
 
   const baseRate = playbackRate && playbackRate > 0 ? playbackRate : 1.0;
   canonicalPlaybackRate = baseRate;
-  const targetPos = projectPosition(rawPosition, isPlaying, baseRate, serverTs);
+  const rawTargetPos = projectPosition(rawPosition, isPlaying, baseRate, serverTs);
+  // Align to whole seconds on periodic heartbeats so sub-second jitter never triggers constant re-seeks
+  const targetPos = isHeartbeat ? Math.round(rawTargetPos) : rawTargetPos;
   const st = getActivePlaybackState();
   const drift = targetPos - st.position;
   const absDrift = Math.abs(drift);
 
-  // Smooth micro-rate drift correction during heartbeats; hard seek on larger divergence or explicit seek/play/pause
+  // Smooth micro-rate drift correction for 0.6s-1.5s drift; hard seek only when drift exceeds 1.5s (1.0s on explicit sync)
   let effectiveRate = baseRate;
-  const seekThreshold = isHeartbeat ? 0.42 : 0.30;
-  if (isPlaying && isHeartbeat && absDrift > 0.08 && absDrift <= seekThreshold) {
-    const nudge = Math.max(-0.03, Math.min(0.03, drift * 0.12));
+  const seekThreshold = isHeartbeat ? 1.5 : 1.0;
+  if (isPlaying && isHeartbeat && absDrift > 0.6 && absDrift <= seekThreshold) {
+    const nudge = Math.max(-0.03, Math.min(0.03, drift * 0.06));
     effectiveRate = Math.max(0.25, Math.min(4.0, baseRate + nudge));
   }
 
@@ -1214,11 +1218,11 @@ function startRoomTimers() {
       JSON.stringify({
         type: "heartbeat",
         is_playing: true,
-        position: st.position || 0,
+        position: Math.round(st.position || 0),
         playback_rate: st.playbackRate || 1.0,
       })
     );
-  }, 3000);
+  }, 5000);
 }
 
 function setRoomUI(roomId) {
@@ -1517,6 +1521,36 @@ function connectToRoom(roomId) {
     }
   };
 }
+
+function seekBySeconds(deltaSec) {
+  if (hasNativeAndroidPlayer || videoEl.readyState < 1) return;
+  const dur = Number.isFinite(videoEl.duration) ? videoEl.duration : Infinity;
+  const next = Math.max(0, Math.min(dur, (videoEl.currentTime || 0) + deltaSec));
+  videoEl.currentTime = next;
+  if (dualSyncActive && audioEl.readyState >= 1) {
+    audioEl.currentTime = next;
+  }
+}
+
+if (btnSeekBack10) {
+  btnSeekBack10.addEventListener("click", () => seekBySeconds(-10));
+}
+if (btnSeekFwd10) {
+  btnSeekFwd10.addEventListener("click", () => seekBySeconds(10));
+}
+
+document.addEventListener("keydown", (e) => {
+  if (hasNativeAndroidPlayer) return;
+  const tag = (document.activeElement && document.activeElement.tagName) || "";
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  if (e.key === "ArrowLeft") {
+    e.preventDefault();
+    seekBySeconds(-10);
+  } else if (e.key === "ArrowRight") {
+    e.preventDefault();
+    seekBySeconds(10);
+  }
+});
 
 document.addEventListener("visibilitychange", () => {
   if (

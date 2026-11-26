@@ -314,6 +314,12 @@ video {
   z-index: 4;
 }
 
+.seek-controls-bar {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
 .sync-log {
   font-size: 0.8rem;
   color: var(--muted);

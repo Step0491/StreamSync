@@ -249,6 +249,7 @@ class MainActivity : AppCompatActivity() {
             loadWithOverviewMode = true
         }
         roomWebView.addJavascriptInterface(nativePlayerController.jsBridge, "AndroidNativePlayer")
+        roomWebView.clearCache(true)
         roomWebView.webChromeClient = WebChromeClient()
         roomWebView.webViewClient = WebViewClient()
     }

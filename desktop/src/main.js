@@ -307,6 +307,7 @@ async function createMainWindow() {
   const roomSession = session.fromPartition("persist:streamsync-room");
   const browserSession = session.fromPartition("persist:streamsync-browser");
 
+  roomSession.clearCache().catch(() => {});
   configureRoomHeaderAndCorsProxy(roomSession);
   installWebRequestMultiplexer(browserSession);
 
