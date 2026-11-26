@@ -3,6 +3,7 @@ package com.streamsync.app.browser
 import android.content.Context
 import com.streamsync.app.adblock.AdBlockEngine
 import com.streamsync.app.extractor.StreamSniffer
+import org.json.JSONArray
 import org.json.JSONObject
 import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.ContentBlocking
@@ -36,6 +37,15 @@ class GeckoBrowserController(
 
     @Volatile
     private var guestAutoPlayPending: Boolean = false
+
+    @Volatile
+    private var guestReplayClicksPending: JSONArray = JSONArray()
+
+    private val recentUserClicks = ArrayList<JSONObject>()
+
+    @Volatile
+    var entryPageUrl: String = ""
+        private set
 
     @Volatile
     var currentUrl: String = "https://www.google.com"
@@ -117,6 +127,27 @@ class GeckoBrowserController(
                     currentTitle = title
                     streamSniffer.activePageTitle = title
                     onTitleChanged(title)
+                }
+            }
+        }
+
+        session.permissionDelegate = object : GeckoSession.PermissionDelegate {
+            override fun onContentPermissionRequest(
+                session: GeckoSession,
+                perm: GeckoSession.PermissionDelegate.ContentPermission
+            ): GeckoResult<Int>? {
+                return when (perm.permission) {
+                    GeckoSession.PermissionDelegate.PERMISSION_AUTOPLAY_INAUDIBLE,
+                    GeckoSession.PermissionDelegate.PERMISSION_AUTOPLAY_AUDIBLE,
+                    GeckoSession.PermissionDelegate.PERMISSION_MEDIA_KEY_SYSTEM_ACCESS -> {
+                        val value = if (perm.permission == GeckoSession.PermissionDelegate.PERMISSION_MEDIA_KEY_SYSTEM_ACCESS) {
+                            GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY
+                        } else {
+                            GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW
+                        }
+                        GeckoResult.fromValue(value)
+                    }
+                    else -> GeckoResult.fromValue(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY)
                 }
             }
         }
@@ -214,6 +245,49 @@ class GeckoBrowserController(
                 val h = msg.optInt("height", 0)
                 streamSniffer.enrichWithDomVideoMetadata(dur, w, h)
             }
+            "user_click" -> {
+                val click = msg.optJSONObject("click")
+                if (click != null && !guestAutoPlayPending) {
+                    recordUserClick(click)
+                }
+            }
+        }
+    }
+
+    private fun recordUserClick(click: JSONObject) {
+        synchronized(recentUserClicks) {
+            if (entryPageUrl.isBlank()) {
+                entryPageUrl = currentUrl
+            }
+            val now = System.currentTimeMillis()
+            click.put("_ts", now)
+            recentUserClicks.removeAll { (now - it.optLong("_ts", 0L)) > 180_000L }
+            if (recentUserClicks.size >= 10) {
+                recentUserClicks.removeAt(0)
+            }
+            recentUserClicks.add(click)
+        }
+    }
+
+    fun getRecentUserClicksSnapshot(): JSONArray {
+        val arr = JSONArray()
+        synchronized(recentUserClicks) {
+            val now = System.currentTimeMillis()
+            for (c in recentUserClicks) {
+                if (now - c.optLong("_ts", 0L) <= 180_000L) {
+                    val copy = JSONObject(c.toString())
+                    copy.remove("_ts")
+                    arr.put(copy)
+                }
+            }
+        }
+        return arr
+    }
+
+    fun clearUserClicks(newEntryUrl: String = "") {
+        synchronized(recentUserClicks) {
+            recentUserClicks.clear()
+            entryPageUrl = newEntryUrl
         }
     }
 
@@ -245,7 +319,12 @@ class GeckoBrowserController(
     }
 
     fun setGuestAutoPlayMode(active: Boolean) {
+        setGuestReplayConfig(active, if (active) guestReplayClicksPending else JSONArray())
+    }
+
+    fun setGuestReplayConfig(active: Boolean, replayClicks: JSONArray) {
         guestAutoPlayPending = active
+        guestReplayClicksPending = if (active) replayClicks else JSONArray()
         syncGuestAutoPlayToExtension()
     }
 
@@ -255,14 +334,18 @@ class GeckoBrowserController(
                 JSONObject().apply {
                     put("type", "set_guest_autoplay")
                     put("active", guestAutoPlayPending)
+                    put("replay_clicks", guestReplayClicksPending)
                 }
             )
         } catch (_: Exception) {
         }
     }
 
-    fun loadUrl(url: String) {
+    fun loadUrl(url: String, resetClickTrail: Boolean = false) {
         currentUrl = url
+        if (resetClickTrail || entryPageUrl.isBlank()) {
+            clearUserClicks(url)
+        }
         session.loadUri(url)
     }
 

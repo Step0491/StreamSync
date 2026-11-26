@@ -150,8 +150,8 @@ class MainActivity : AppCompatActivity() {
             roomWebView = roomWebView,
             defaultUserAgent = defaultUa,
             onFullscreenToggle = { fullscreen -> applyFullscreenMode(fullscreen) },
-            onExtractSourceUrlRequested = { srcUrl, wantPaired ->
-                extractStreamSilentlyForGuest(srcUrl, wantPaired)
+            onExtractSourceUrlRequested = { srcUrl, wantPaired, streamHintJson ->
+                extractStreamSilentlyForGuest(srcUrl, wantPaired, streamHintJson)
             }
         )
 
@@ -340,7 +340,7 @@ class MainActivity : AppCompatActivity() {
             currentBrowserUrl = url
             streamSniffer.clearForNewTopLevelPage(url)
             adBlockEngine.resetPageCounter()
-            geckoBrowser.loadUrl(url)
+            geckoBrowser.loadUrl(url, resetClickTrail = true)
         }
     }
 
@@ -427,6 +427,18 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        val sourcePage = geckoBrowser.currentUrl.ifBlank { currentBrowserUrl }
+        val streamHint = JSONObject().apply {
+            put("mode", if (audioStream != null) "paired" else "single")
+            put("referer_url", mergedHeaders["Referer"] ?: mergedHeaders["referer"] ?: "")
+            put("entry_url", geckoBrowser.entryPageUrl.ifBlank { sourcePage })
+            put("video", buildTrackHintJson(videoStream))
+            if (audioStream != null) {
+                put("audio", buildTrackHintJson(audioStream))
+            }
+            put("click_trail", geckoBrowser.getRecentUserClicksSnapshot())
+        }
+
         val jsPayload = JSONObject().apply {
             put("video_url", videoStream.url)
             put("audio_url", audioStream?.url ?: "")
@@ -435,7 +447,8 @@ class MainActivity : AppCompatActivity() {
             put("title", pageTitle)
             put("label", combinedLabel)
             put("headers", headersJson)
-            put("source_url", geckoBrowser.currentUrl.ifBlank { currentBrowserUrl })
+            put("source_url", sourcePage)
+            put("stream_hint", streamHint)
             put("already_loaded_native", true)
         }
 
@@ -480,21 +493,69 @@ class MainActivity : AppCompatActivity() {
         ).show()
     }
 
-    private fun extractStreamSilentlyForGuest(sourceUrl: String, wantPaired: Boolean) {
+    private fun buildTrackHintJson(stream: DetectedStream): JSONObject {
+        val parsed = runCatching { Uri.parse(stream.url) }.getOrNull()
+        return JSONObject().apply {
+            put("kind", stream.kind.name)
+            put("is_hls", stream.isHls)
+            put("is_dash", stream.isDash)
+            put("container", stream.container)
+            put("host", parsed?.host?.lowercase() ?: "")
+            put("path_prefix", (parsed?.path ?: "").take(200))
+            put("height", stream.height ?: 0)
+            put("language", stream.language ?: "")
+            put("label", stream.label.take(120))
+        }
+    }
+
+    private fun scoreStreamCandidate(stream: DetectedStream, hint: JSONObject?): Int {
+        if (hint == null) return 0
+        var score = 0
+        val parsed = runCatching { Uri.parse(stream.url) }.getOrNull()
+        val sHost = parsed?.host?.lowercase() ?: ""
+        val sPath = parsed?.path ?: ""
+        val hHost = hint.optString("host", "").lowercase()
+        val hPath = hint.optString("path_prefix", "")
+        if (hHost.isNotEmpty() && sHost == hHost) score += 40
+        if (hPath.length > 3 && sPath.startsWith(hPath.substringBeforeLast('/'))) score += 30
+        if (hPath.length > 3 && sPath == hPath) score += 25
+        if (hint.optString("kind") == stream.kind.name) score += 30
+        if (hint.optBoolean("is_hls", false) == stream.isHls && stream.isHls) score += 25
+        if (hint.optBoolean("is_dash", false) == stream.isDash && stream.isDash) score += 25
+        val hHeight = hint.optInt("height", 0)
+        if (hHeight > 0 && stream.height == hHeight) score += 20
+        val hLang = hint.optString("language", "").lowercase()
+        val sLang = (stream.language ?: "").lowercase()
+        if (hLang.isNotEmpty() && sLang.isNotEmpty() && (sLang == hLang || sLang.contains(hLang))) score += 25
+        if (hint.optString("container", "").equals(stream.container, ignoreCase = true)) score += 10
+        return score
+    }
+
+    private fun extractStreamSilentlyForGuest(sourceUrl: String, wantPaired: Boolean, streamHintJson: String = "") {
+        val hintObj = runCatching {
+            if (streamHintJson.isNotBlank()) JSONObject(streamHintJson) else null
+        }.getOrNull()
+        val hintVideo = hintObj?.optJSONObject("video")
+        val hintAudio = hintObj?.optJSONObject("audio")
+        val refererEmbedUrl = hintObj?.optString("referer_url", "")?.trim().orEmpty()
+        val clickTrail = hintObj?.optJSONArray("click_trail") ?: JSONArray()
+
         currentBrowserUrl = sourceUrl
         latestStreams = emptyList()
         streamSniffer.clearForNewTopLevelPage(sourceUrl)
         adBlockEngine.resetPageCounter()
-        // Keep GeckoView INVISIBLE (rather than GONE) while extracting so Gecko media/iframe timers run normally
+        // Keep browserGeckoView VISIBLE (positioned behind opaque roomPane) so GeckoView compositor & iframes execute at full speed
         if (showingRoom) {
-            browserGeckoView.visibility = View.INVISIBLE
+            browserGeckoView.visibility = View.VISIBLE
         }
-        geckoBrowser.setGuestAutoPlayMode(true)
+        geckoBrowser.setGuestReplayConfig(true, clickTrail)
         geckoBrowser.loadUrl(sourceUrl)
 
         val handler = android.os.Handler(android.os.Looper.getMainLooper())
         val startMs = System.currentTimeMillis()
         var firstCandidateMs = 0L
+        var triedRefererHop = false
+
         val poller = object : Runnable {
             override fun run() {
                 val list = latestStreams.filter { !it.isDrmProtected }
@@ -502,27 +563,51 @@ class MainActivity : AppCompatActivity() {
                 val videoOnly = list.filter { it.kind == com.streamsync.app.extractor.StreamKind.VIDEO_ONLY }
                 val audioOnly = list.filter { it.kind == com.streamsync.app.extractor.StreamKind.AUDIO_ONLY }
 
+                val bestVideoOnly = videoOnly.maxByOrNull { scoreStreamCandidate(it, hintVideo) }
+                val bestAudioOnly = audioOnly.maxByOrNull { scoreStreamCandidate(it, hintAudio) }
+                val bestCombined = combined.maxByOrNull { scoreStreamCandidate(it, hintVideo) }
+                val bestVideoScore = maxOf(
+                    bestVideoOnly?.let { scoreStreamCandidate(it, hintVideo) } ?: -1,
+                    bestCombined?.let { scoreStreamCandidate(it, hintVideo) } ?: -1
+                )
+
                 var chosenVideo: DetectedStream? = null
                 var chosenAudio: DetectedStream? = null
 
-                if (wantPaired && videoOnly.isNotEmpty() && audioOnly.isNotEmpty()) {
-                    chosenVideo = videoOnly.first()
-                    chosenAudio = audioOnly.first()
-                } else if (combined.isNotEmpty() || (videoOnly.isNotEmpty() && audioOnly.isNotEmpty())) {
+                if (wantPaired && bestVideoOnly != null && bestAudioOnly != null) {
                     if (firstCandidateMs == 0L) firstCandidateMs = System.currentTimeMillis()
-                    if (!wantPaired || System.currentTimeMillis() - firstCandidateMs >= 1800L) {
-                        if (videoOnly.isNotEmpty() && audioOnly.isNotEmpty()) {
-                            chosenVideo = videoOnly.first()
-                            chosenAudio = audioOnly.first()
-                        } else if (combined.isNotEmpty()) {
-                            chosenVideo = combined.first()
+                    if (bestVideoScore >= 90 || System.currentTimeMillis() - firstCandidateMs >= 1600L) {
+                        chosenVideo = bestVideoOnly
+                        chosenAudio = bestAudioOnly
+                    }
+                } else if (bestCombined != null || (bestVideoOnly != null && bestAudioOnly != null)) {
+                    if (firstCandidateMs == 0L) firstCandidateMs = System.currentTimeMillis()
+                    val exactMatch = bestVideoScore >= 90 && (!wantPaired || bestAudioOnly != null)
+                    if (exactMatch || System.currentTimeMillis() - firstCandidateMs >= 1800L) {
+                        if (wantPaired && bestVideoOnly != null && bestAudioOnly != null) {
+                            chosenVideo = bestVideoOnly
+                            chosenAudio = bestAudioOnly
+                        } else if (!wantPaired && bestCombined != null && bestVideoOnly != null) {
+                            val cScore = scoreStreamCandidate(bestCombined, hintVideo)
+                            val vScore = scoreStreamCandidate(bestVideoOnly, hintVideo)
+                            if (vScore > cScore && bestAudioOnly != null) {
+                                chosenVideo = bestVideoOnly
+                                chosenAudio = bestAudioOnly
+                            } else {
+                                chosenVideo = bestCombined
+                            }
+                        } else if (bestVideoOnly != null && bestAudioOnly != null) {
+                            chosenVideo = bestVideoOnly
+                            chosenAudio = bestAudioOnly
+                        } else if (bestCombined != null) {
+                            chosenVideo = bestCombined
                         }
                     }
                 }
 
                 if (chosenVideo != null) {
                     // Stop hidden GeckoView page immediately so there is ZERO background audio bleed
-                    geckoBrowser.setGuestAutoPlayMode(false)
+                    geckoBrowser.setGuestReplayConfig(false, JSONArray())
                     geckoBrowser.loadUrl("about:blank")
                     if (showingRoom) {
                         browserGeckoView.visibility = View.GONE
@@ -565,11 +650,20 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
 
-                geckoBrowser.setGuestAutoPlayMode(true)
-                if (System.currentTimeMillis() - startMs < 25_000L) {
+                val elapsed = System.currentTimeMillis() - startMs
+                // Secondary hop: if the main page hasn't yielded streams after 11s, try the player embed referer URL directly
+                if (!triedRefererHop && elapsed >= 11_000L && list.isEmpty() &&
+                    refererEmbedUrl.startsWith("http") && refererEmbedUrl != sourceUrl
+                ) {
+                    triedRefererHop = true
+                    geckoBrowser.loadUrl(refererEmbedUrl)
+                }
+
+                geckoBrowser.setGuestReplayConfig(true, clickTrail)
+                if (elapsed < 28_000L) {
                     handler.postDelayed(this, 500L)
                 } else {
-                    geckoBrowser.setGuestAutoPlayMode(false)
+                    geckoBrowser.setGuestReplayConfig(false, JSONArray())
                     geckoBrowser.loadUrl("about:blank")
                     if (showingRoom) {
                         browserGeckoView.visibility = View.GONE

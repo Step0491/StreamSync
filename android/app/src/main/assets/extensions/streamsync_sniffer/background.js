@@ -9,6 +9,7 @@ const port = browser.runtime.connectNative("streamsync_bridge");
 
 let shieldEnabled = true;
 let guestAutoPlayActive = false;
+let guestReplayClicks = [];
 
 port.onMessage.addListener((msg) => {
   if (!msg || typeof msg !== "object") return;
@@ -16,6 +17,7 @@ port.onMessage.addListener((msg) => {
     shieldEnabled = Boolean(msg.enabled);
   } else if (msg.type === "set_guest_autoplay") {
     guestAutoPlayActive = Boolean(msg.active);
+    guestReplayClicks = Array.isArray(msg.replay_clicks) ? msg.replay_clicks : [];
   }
 });
 
@@ -336,10 +338,10 @@ browser.webRequest.onHeadersReceived.addListener(
 browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || typeof msg !== "object") return;
   if (msg.type === "query_guest_autoplay") {
-    sendResponse({ active: guestAutoPlayActive });
+    sendResponse({ active: guestAutoPlayActive, replay_clicks: guestReplayClicks });
     return true;
   }
-  if (msg.type === "structured_stream" || msg.type === "blocked_popup" || msg.type === "page_video_meta") {
+  if (msg.type === "structured_stream" || msg.type === "blocked_popup" || msg.type === "page_video_meta" || msg.type === "user_click") {
     postToAndroid(msg);
   }
 });

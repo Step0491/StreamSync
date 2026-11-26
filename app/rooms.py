@@ -113,6 +113,98 @@ class RoomState:
         }
 
 
+def _sanitize_track_hint(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    return {
+        "kind": str(raw.get("kind") or "")[:24],
+        "is_hls": bool(raw.get("is_hls", False)),
+        "is_dash": bool(raw.get("is_dash", False)),
+        "container": str(raw.get("container") or "")[:16],
+        "host": str(raw.get("host") or "")[:120],
+        "path_prefix": str(raw.get("path_prefix") or "")[:200],
+        "height": int(raw["height"]) if isinstance(raw.get("height"), (int, float)) else 0,
+        "language": str(raw.get("language") or "")[:40],
+        "label": str(raw.get("label") or "")[:120],
+    }
+
+
+def _sanitize_stream_hint(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    clicks_out: list[dict[str, Any]] = []
+    raw_clicks = raw.get("click_trail")
+    if isinstance(raw_clicks, list):
+        for c in raw_clicks[-8:]:
+            if not isinstance(c, dict):
+                continue
+            clicks_out.append(
+                {
+                    "tag": str(c.get("tag") or "")[:24],
+                    "id": str(c.get("id") or "")[:80],
+                    "selector": str(c.get("selector") or "")[:220],
+                    "href": str(c.get("href") or "")[:512],
+                    "text": str(c.get("text") or "")[:80],
+                    "frame_url": str(c.get("frame_url") or "")[:512],
+                    "is_top": bool(c.get("is_top", True)),
+                    "rel_x": float(c["rel_x"]) if isinstance(c.get("rel_x"), (int, float)) else 0.5,
+                    "rel_y": float(c["rel_y"]) if isinstance(c.get("rel_y"), (int, float)) else 0.5,
+                }
+            )
+    hint: dict[str, Any] = {
+        "mode": "paired" if raw.get("mode") == "paired" else "single",
+        "referer_url": str(raw.get("referer_url") or "")[:512],
+        "entry_url": str(raw.get("entry_url") or "")[:512],
+        "video": _sanitize_track_hint(raw.get("video")),
+        "audio": _sanitize_track_hint(raw.get("audio")),
+        "click_trail": clicks_out,
+    }
+    return hint
+
+
+def _sanitize_media_payload(media: dict[str, Any], include_snapshot: bool = True) -> dict[str, Any]:
+    raw_pb = media["playback"]
+    sanitized_headers: dict[str, str] = {}
+    if isinstance(raw_pb.get("headers"), dict):
+        for hk, hv in raw_pb["headers"].items():
+            if isinstance(hk, str) and isinstance(hv, str):
+                if hk.lower() in ("referer", "origin", "user-agent") and hv.strip():
+                    sanitized_headers[hk] = hv.strip()[:512]
+
+    playback_clean: dict[str, Any] = {
+        "mode": "paired" if raw_pb.get("mode") == "paired" and raw_pb.get("audio_url") else "single",
+        "video_url": str(raw_pb.get("video_url") or ""),
+        "audio_url": str(raw_pb.get("audio_url") or "") or None,
+        "is_hls": bool(raw_pb.get("is_hls", False)),
+        "is_dash": bool(raw_pb.get("is_dash", False)),
+        "label": str(raw_pb.get("label") or "")[:120],
+    }
+    if sanitized_headers:
+        playback_clean["headers"] = sanitized_headers
+
+    clean: dict[str, Any] = {
+        "title": str(media.get("title") or "Untitled Stream")[:160],
+        "source_url": str(media.get("source_url") or ""),
+        "playback": playback_clean,
+    }
+    stream_hint = _sanitize_stream_hint(media.get("stream_hint"))
+    if stream_hint:
+        clean["stream_hint"] = stream_hint
+
+    if include_snapshot:
+        tracks_snapshot = media.get("tracks_snapshot")
+        if isinstance(tracks_snapshot, dict):
+            clean_snapshot = {
+                k: tracks_snapshot[k][:15]
+                for k in ("combined_formats", "video_only_formats", "audio_only_formats")
+                if isinstance(tracks_snapshot.get(k), list)
+            } or None
+            clean["tracks_snapshot"] = clean_snapshot
+        else:
+            clean["tracks_snapshot"] = None
+    return clean
+
+
 class RoomManager:
     """In-memory coordinator for synchronized watch rooms."""
 
@@ -147,31 +239,8 @@ class RoomManager:
             room = RoomState(room_id=code)
             self.rooms[code] = room
 
-        raw_pb = media.get("playback") if isinstance(media.get("playback"), dict) else {}
-        sanitized_headers: dict[str, str] = {}
-        if isinstance(raw_pb.get("headers"), dict):
-            for hk, hv in raw_pb["headers"].items():
-                if isinstance(hk, str) and isinstance(hv, str):
-                    if hk.lower() in ("referer", "origin", "user-agent") and hv.strip():
-                        sanitized_headers[hk] = hv.strip()[:512]
-
-        playback_clean: dict[str, Any] = {
-            "mode": "paired" if raw_pb.get("mode") == "paired" and raw_pb.get("audio_url") else "single",
-            "video_url": str(raw_pb.get("video_url") or ""),
-            "audio_url": str(raw_pb.get("audio_url") or "") or None,
-            "is_hls": bool(raw_pb.get("is_hls", False)),
-            "is_dash": bool(raw_pb.get("is_dash", False)),
-            "label": str(raw_pb.get("label") or "")[:120],
-        }
-        if sanitized_headers:
-            playback_clean["headers"] = sanitized_headers
-
         now = time.time()
-        room.media = {
-            "title": str(media.get("title") or "Untitled Stream")[:160],
-            "source_url": str(media.get("source_url") or ""),
-            "playback": playback_clean,
-        }
+        room.media = _sanitize_media_payload(media, include_snapshot=False)
         room.buffering_members.clear()
         room.is_playing = auto_play
         room.desired_playing = auto_play
@@ -396,41 +465,8 @@ class RoomManager:
             if not isinstance(media, dict) or not isinstance(media.get("playback"), dict):
                 return
 
-            raw_pb = media["playback"]
-            sanitized_headers: dict[str, str] = {}
-            if isinstance(raw_pb.get("headers"), dict):
-                for hk, hv in raw_pb["headers"].items():
-                    if isinstance(hk, str) and isinstance(hv, str):
-                        if hk.lower() in ("referer", "origin", "user-agent") and hv.strip():
-                            sanitized_headers[hk] = hv.strip()[:512]
-
-            playback_clean: dict[str, Any] = {
-                "mode": "paired" if raw_pb.get("mode") == "paired" and raw_pb.get("audio_url") else "single",
-                "video_url": str(raw_pb.get("video_url") or ""),
-                "audio_url": str(raw_pb.get("audio_url") or "") or None,
-                "is_hls": bool(raw_pb.get("is_hls", False)),
-                "is_dash": bool(raw_pb.get("is_dash", False)),
-                "label": str(raw_pb.get("label") or "")[:120],
-            }
-            if sanitized_headers:
-                playback_clean["headers"] = sanitized_headers
-
             auto_play = bool(data.get("auto_play", False))
-            tracks_snapshot = media.get("tracks_snapshot")
-            clean_snapshot = None
-            if isinstance(tracks_snapshot, dict):
-                clean_snapshot = {
-                    k: tracks_snapshot[k][:15]
-                    for k in ("combined_formats", "video_only_formats", "audio_only_formats")
-                    if isinstance(tracks_snapshot.get(k), list)
-                } or None
-
-            room.media = {
-                "title": str(media.get("title") or "Untitled Stream")[:160],
-                "source_url": str(media.get("source_url") or ""),
-                "playback": playback_clean,
-                "tracks_snapshot": clean_snapshot,
-            }
+            room.media = _sanitize_media_payload(media, include_snapshot=True)
             room.buffering_members.clear()
             room.is_playing = auto_play
             room.desired_playing = auto_play

@@ -88,6 +88,7 @@ let currentData = null;
 let lastLoadedPlayback = null;
 let lastLoadedTitle = "";
 let lastLoadedSourceUrl = "";
+let lastLoadedStreamHint = null;
 let lastKnownRoomSync = null;
 let hasAttemptedGuestExtraction = false;
 let pendingMediaBroadcast = null;
@@ -455,10 +456,12 @@ async function loadUnifiedPlayback(playback, title = null, broadcast = false, op
   const alreadyLoadedNative = Boolean(options.alreadyLoadedNative);
   const forceProxy = Boolean(options.forceProxy);
   const sourceUrl = options.sourceUrl || (currentData ? currentData.source_url : "") || lastLoadedSourceUrl || "";
+  const streamHint = options.streamHint !== undefined ? options.streamHint : lastLoadedStreamHint;
 
   lastLoadedPlayback = playback;
   lastLoadedTitle = title || mediaTitle.textContent || "Untitled Stream";
   if (sourceUrl) lastLoadedSourceUrl = sourceUrl;
+  if (options.streamHint !== undefined) lastLoadedStreamHint = options.streamHint;
   if (!options.isGuestReExtracted) {
     hasAttemptedGuestExtraction = false;
   }
@@ -474,6 +477,7 @@ async function loadUnifiedPlayback(playback, title = null, broadcast = false, op
       media: {
         title: title || mediaTitle.textContent || "Untitled Stream",
         source_url: sourceUrl,
+        stream_hint: streamHint || null,
         playback,
       },
     };
@@ -798,11 +802,12 @@ async function extractGuestFromServerApi(sourceUrl) {
   }
 }
 
-function tryGuestLocalExtraction(reason = "", fallbackPlayback = null) {
+function tryGuestLocalExtraction(reason = "", fallbackPlayback = null, streamHint = undefined) {
   if (hasAttemptedGuestExtraction || !lastLoadedSourceUrl) return false;
   if (!lastLoadedSourceUrl.startsWith("http://") && !lastLoadedSourceUrl.startsWith("https://")) return false;
   hasAttemptedGuestExtraction = true;
   lastGuestExtractFailureReason = "";
+  const effectiveHint = streamHint !== undefined ? streamHint : lastLoadedStreamHint;
 
   const wantPaired = Boolean((fallbackPlayback || lastLoadedPlayback) && (fallbackPlayback || lastLoadedPlayback).mode === "paired");
   roomSyncLog.textContent = `Loading stream via your IP (${reason || "local browser"})...`;
@@ -810,11 +815,15 @@ function tryGuestLocalExtraction(reason = "", fallbackPlayback = null) {
   updateStatusStripVisibility();
 
   if (hasNativeAndroidPlayer && typeof window.AndroidNativePlayer.extractFromPageUrl === "function") {
-    window.AndroidNativePlayer.extractFromPageUrl(lastLoadedSourceUrl, wantPaired);
+    window.AndroidNativePlayer.extractFromPageUrl(
+      lastLoadedSourceUrl,
+      wantPaired,
+      effectiveHint ? JSON.stringify(effectiveHint) : ""
+    );
     return true;
   }
   if (hasDesktopProxy && typeof window.StreamSyncDesktop.extractFromSourceUrl === "function") {
-    window.StreamSyncDesktop.extractFromSourceUrl(lastLoadedSourceUrl, wantPaired)
+    window.StreamSyncDesktop.extractFromSourceUrl(lastLoadedSourceUrl, wantPaired, effectiveHint || null)
       .then((freshPlayback) => {
         if (freshPlayback && freshPlayback.video_url) {
           loadUnifiedPlayback(freshPlayback, lastLoadedTitle, false, {
@@ -1323,6 +1332,7 @@ function connectToRoom(roomId) {
           lastLoadedSourceUrl = msg.media.source_url;
           lastLoadedTitle = msg.media.title || "Synced Stream";
           lastLoadedPlayback = msg.media.playback;
+          lastLoadedStreamHint = msg.media.stream_hint || null;
           hasAttemptedGuestExtraction = false;
           if (!hasNativeAndroidPlayer) {
             playerSection.classList.remove("hidden");
@@ -1330,11 +1340,12 @@ function connectToRoom(roomId) {
           }
           mediaTitle.textContent = lastLoadedTitle;
           nowPlayingEl.textContent = "Extracting fresh stream for your IP...";
-          tryGuestLocalExtraction("syncing stream for your IP", msg.media.playback);
+          tryGuestLocalExtraction("syncing stream for your IP", msg.media.playback, lastLoadedStreamHint);
         } else {
           loadUnifiedPlayback(msg.media.playback, msg.media.title, false, {
             autoPlay: Boolean(msg.is_playing),
             sourceUrl: msg.media.source_url || "",
+            streamHint: msg.media.stream_hint || null,
             initialSync: {
               ...lastKnownRoomSync,
               logText: "Synced with room",
@@ -1351,6 +1362,7 @@ function connectToRoom(roomId) {
             media: {
               title: lastLoadedTitle || "Untitled Stream",
               source_url: lastLoadedSourceUrl || (currentData ? currentData.source_url : ""),
+              stream_hint: lastLoadedStreamHint || null,
               playback: lastLoadedPlayback,
             },
           })
@@ -1400,6 +1412,7 @@ function connectToRoom(roomId) {
             lastLoadedSourceUrl = msg.media.source_url;
             lastLoadedTitle = msg.media.title || "Synced Stream";
             lastLoadedPlayback = msg.media.playback;
+            lastLoadedStreamHint = msg.media.stream_hint || null;
             hasAttemptedGuestExtraction = false;
             if (!hasNativeAndroidPlayer) {
               playerSection.classList.remove("hidden");
@@ -1407,11 +1420,12 @@ function connectToRoom(roomId) {
             }
             mediaTitle.textContent = lastLoadedTitle;
             nowPlayingEl.textContent = "Extracting fresh stream for your IP...";
-            tryGuestLocalExtraction("syncing stream for your IP", msg.media.playback);
+            tryGuestLocalExtraction("syncing stream for your IP", msg.media.playback, lastLoadedStreamHint);
           } else {
             loadUnifiedPlayback(msg.media.playback, msg.media.title, false, {
               autoPlay: Boolean(msg.is_playing),
               sourceUrl: msg.media.source_url || "",
+              streamHint: msg.media.stream_hint || null,
               initialSync: {
                 ...lastKnownRoomSync,
                 logText: `${msg.by} loaded: ${msg.media.title}`,
@@ -1634,6 +1648,7 @@ window.loadFromNativePayload = (payload) => {
     autoPlay: true,
     alreadyLoadedNative: Boolean(payload.already_loaded_native),
     sourceUrl: payload.source_url || "",
+    streamHint: payload.stream_hint || null,
   });
 };
 

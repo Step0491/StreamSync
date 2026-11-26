@@ -43,7 +43,7 @@ class NativeRoomPlayerController(
     private val roomWebView: WebView,
     private val defaultUserAgent: String,
     private val onFullscreenToggle: (Boolean) -> Unit,
-    private val onExtractSourceUrlRequested: (sourceUrl: String, wantPaired: Boolean) -> Unit = { _, _ -> }
+    private val onExtractSourceUrlRequested: (sourceUrl: String, wantPaired: Boolean, streamHintJson: String) -> Unit = { _, _, _ -> }
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
     val exoPlayer: ExoPlayer = ExoPlayer.Builder(context)
@@ -440,10 +440,16 @@ class NativeRoomPlayerController(
 
         @JavascriptInterface
         fun extractFromPageUrl(sourceUrl: String?, wantPaired: Boolean) {
+            extractFromPageUrl(sourceUrl, wantPaired, "")
+        }
+
+        @JavascriptInterface
+        fun extractFromPageUrl(sourceUrl: String?, wantPaired: Boolean, streamHintJson: String?) {
             val clean = sourceUrl?.trim() ?: return
             if (!clean.startsWith("http://") && !clean.startsWith("https://")) return
+            val hintStr = streamHintJson ?: ""
             mainHandler.post {
-                onExtractSourceUrlRequested(clean, wantPaired)
+                onExtractSourceUrlRequested(clean, wantPaired, hintStr)
             }
         }
     }

@@ -146,16 +146,149 @@
     } catch (_) {}
   }
 
-  // 4. Silent Auto-Play inside all frames & cross-origin iframes when Guest is extracting a fresh stream
+  // 4. Record Admin's real clicks on links / buttons / players across all frames so Guest can replay them
+  let isGuestReplayingNow = false;
+  function buildSimpleSelector(el) {
+    if (!el || el.nodeType !== 1) return "";
+    if (el.id) return "#" + CSS.escape(el.id);
+    const parts = [];
+    let cur = el;
+    for (let depth = 0; depth < 4 && cur && cur.nodeType === 1 && cur !== document.body && cur !== document.documentElement; depth++) {
+      let seg = cur.tagName.toLowerCase();
+      if (cur.id) {
+        parts.unshift("#" + CSS.escape(cur.id));
+        break;
+      }
+      const cls = typeof cur.className === "string"
+        ? cur.className.trim().split(/\s+/).filter((c) => c && c.length < 32 && !/^(active|hover|focus|selected)$/i.test(c)).slice(0, 2)
+        : [];
+      if (cls.length) {
+        seg += "." + cls.map((c) => CSS.escape(c)).join(".");
+      } else if (cur.parentElement) {
+        const sibs = Array.from(cur.parentElement.children).filter((s) => s.tagName === cur.tagName);
+        if (sibs.length > 1) {
+          seg += ":nth-of-type(" + (sibs.indexOf(cur) + 1) + ")";
+        }
+      }
+      parts.unshift(seg);
+      cur = cur.parentElement;
+    }
+    return parts.join(" > ");
+  }
+
+  document.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (isGuestReplayingNow || !e.isTrusted) return;
+      const raw = e.target;
+      if (!raw || raw.nodeType !== 1) return;
+      const interactive = raw.closest("a, button, [role='button'], [onclick], video, [class*='play' i], [class*='server' i], [class*='watch' i], [class*='player' i]") || raw;
+      const anchor = raw.closest("a");
+      const href = anchor && anchor.href && /^https?:\/\//i.test(anchor.href) ? anchor.href : "";
+      const iw = Math.max(1, window.innerWidth || 1);
+      const ih = Math.max(1, window.innerHeight || 1);
+      try {
+        browser.runtime.sendMessage({
+          type: "user_click",
+          click: {
+            tag: (interactive.tagName || "").toLowerCase(),
+            id: (interactive.id || "").slice(0, 80),
+            selector: buildSimpleSelector(interactive).slice(0, 220),
+            href: href.slice(0, 512),
+            text: (interactive.innerText || interactive.getAttribute("aria-label") || interactive.getAttribute("title") || "").replace(/\s+/g, " ").trim().slice(0, 80),
+            frame_url: location.href.slice(0, 512),
+            is_top: window === window.top,
+            rel_x: Number((e.clientX / iw).toFixed(4)),
+            rel_y: Number((e.clientY / ih).toFixed(4)),
+          },
+        });
+      } catch (_) {}
+    },
+    true
+  );
+
+  // 5. Silent Click-Replay + Auto-Play inside all frames & cross-origin iframes when Guest is extracting
   let autoPlayAttempts = 0;
+  const replayedKeys = new Set();
+
+  function frameMatchesClick(c) {
+    if (!c) return false;
+    const isTopHere = window === window.top;
+    if (Boolean(c.is_top) !== isTopHere) return false;
+    if (isTopHere) return true;
+    try {
+      const targetUrl = new URL(c.frame_url || "");
+      return targetUrl.hostname === location.hostname;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  function findClickTarget(c) {
+    if (c.selector) {
+      try {
+        const bySel = document.querySelector(c.selector);
+        if (bySel) return bySel;
+      } catch (_) {}
+    }
+    if (c.href) {
+      try {
+        const pathPart = new URL(c.href).pathname;
+        const anchors = document.querySelectorAll("a[href]");
+        for (let i = 0; i < anchors.length; i++) {
+          if (anchors[i].href === c.href || (pathPart && pathPart.length > 3 && anchors[i].getAttribute("href")?.includes(pathPart))) {
+            return anchors[i];
+          }
+        }
+      } catch (_) {}
+    }
+    if (c.text && c.text.length >= 2) {
+      const needle = c.text.toLowerCase();
+      const cand = document.querySelectorAll(c.tag || "a, button, [role='button'], div, span");
+      for (let i = 0; i < cand.length; i++) {
+        const el = cand[i];
+        const t = (el.innerText || el.getAttribute("aria-label") || el.getAttribute("title") || "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (t && (t === needle || (needle.length >= 4 && t.includes(needle)))) {
+          return el;
+        }
+      }
+    }
+    if (typeof c.rel_x === "number" && typeof c.rel_y === "number" && c.rel_x > 0 && c.rel_y > 0) {
+      const x = Math.round(c.rel_x * (window.innerWidth || 0));
+      const y = Math.round(c.rel_y * (window.innerHeight || 0));
+      if (x > 0 && y > 0) {
+        return document.elementFromPoint(x, y);
+      }
+    }
+    return null;
+  }
+
   function trySilentGuestAutoPlay() {
-    if (autoPlayAttempts >= 15) return;
+    if (autoPlayAttempts >= 22) return;
     try {
       browser.runtime.sendMessage({ type: "query_guest_autoplay" }).then((resp) => {
         if (!resp || !resp.active) {
+          isGuestReplayingNow = false;
           autoPlayAttempts = 0;
+          replayedKeys.clear();
           return;
         }
+        isGuestReplayingNow = true;
+        const clicks = Array.isArray(resp.replay_clicks) ? resp.replay_clicks : [];
+        for (let i = 0; i < clicks.length; i++) {
+          const c = clicks[i];
+          const key = i + "|" + (c.selector || c.href || c.text || "");
+          if (replayedKeys.has(key) || !frameMatchesClick(c)) continue;
+          const targetEl = findClickTarget(c);
+          if (targetEl) {
+            replayedKeys.add(key);
+            try { targetEl.scrollIntoView({ block: "center", behavior: "instant" }); } catch (_) {}
+            try { targetEl.click(); } catch (_) {}
+            try { targetEl.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window })); } catch (_) {}
+            break;
+          }
+        }
+
         const v = document.querySelector("video");
         if (v) {
           v.muted = true;
@@ -183,5 +316,5 @@
   setInterval(() => {
     scanYouTube();
     trySilentGuestAutoPlay();
-  }, 1200);
+  }, 900);
 })();

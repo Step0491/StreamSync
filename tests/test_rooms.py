@@ -52,6 +52,13 @@ def test_websocket_room_sync_media_and_chat():
                 "media": {
                     "title": "Unified Movie",
                     "source_url": "https://example.com/watch?v=1",
+                    "stream_hint": {
+                        "mode": "paired",
+                        "referer_url": "https://embed.example.com/e/1",
+                        "video": {"kind": "VIDEO_ONLY", "host": "cdn.example.com", "height": 1080, "container": "mp4"},
+                        "audio": {"kind": "AUDIO_ONLY", "host": "cdn.example.com", "language": "it", "container": "m3u8"},
+                        "click_trail": [{"tag": "button", "selector": "#play-btn", "text": "Guarda", "is_top": True, "rel_x": 0.5, "rel_y": 0.5}],
+                    },
                     "playback": {
                         "mode": "paired",
                         "video_url": "https://cdn.example.com/1080v.mp4",
@@ -74,6 +81,9 @@ def test_websocket_room_sync_media_and_chat():
         assert m2["media"]["playback"]["mode"] == "paired"
         # Referer is preserved for Electron/ExoPlayer peers while sensitive Cookie is stripped!
         assert m2["media"]["playback"]["headers"] == {"Referer": "https://example.com/watch?v=1"}
+        assert m2["media"]["stream_hint"]["video"]["height"] == 1080
+        assert m2["media"]["stream_hint"]["audio"]["language"] == "it"
+        assert m2["media"]["stream_hint"]["click_trail"][0]["selector"] == "#play-btn"
 
         # Alice presses play at 42.5s -> Bob receives sync event
         ws1.send_json({"type": "sync", "action": "play", "is_playing": True, "position": 42.5, "playback_rate": 1.0})

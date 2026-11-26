@@ -52,6 +52,9 @@ let updateBarVisible = false;
 let isHtmlFullscreen = false;
 let wasFullScreenBeforeHtml = false;
 let currentBrowserUrl = DEFAULT_BROWSER_URL;
+let entryBrowserUrl = "";
+let recentUserClicks = [];
+let isGuestExtracting = false;
 let currentRoomUrl = DEFAULT_SERVER_URL;
 let lastBrowserNavSig = "";
 
@@ -540,6 +543,8 @@ ipcMain.handle("shell:navigate", (_e, rawUrl) => {
     roomView.webContents.loadURL(target);
   } else {
     currentBrowserUrl = target;
+    entryBrowserUrl = target;
+    recentUserClicks = [];
     streamSniffer.clearForNewPage(target);
     browserView.webContents.loadURL(target);
   }
@@ -575,6 +580,12 @@ ipcMain.on("browser:media-signal", (_e, payload) => {
     streamSniffer.ingestStructuredStreams(payload.items, payload.pageUrl, payload.pageTitle);
   } else if (payload.type === "dom_meta") {
     streamSniffer.enrichWithDomMeta(payload.durationSec, payload.width, payload.height);
+  } else if (payload.type === "user_click" && payload.click && !isGuestExtracting) {
+    if (!entryBrowserUrl) entryBrowserUrl = currentBrowserUrl;
+    const now = Date.now();
+    recentUserClicks = recentUserClicks.filter((c) => now - (c._ts || 0) <= 180000);
+    if (recentUserClicks.length >= 10) recentUserClicks.shift();
+    recentUserClicks.push({ ...payload.click, _ts: now });
   }
 });
 
@@ -611,19 +622,124 @@ ipcMain.handle("room:register-headers", (_e, payload) => {
   }
 });
 
-ipcMain.handle("room:extract-source-url", async (_e, { sourceUrl, wantPaired }) => {
+function buildTrackHint(stream) {
+  if (!stream || !stream.url) return null;
+  let host = "";
+  let pathPrefix = "";
+  try {
+    const u = new URL(stream.url);
+    host = u.hostname.toLowerCase();
+    pathPrefix = u.pathname.slice(0, 200);
+  } catch {}
+  return {
+    kind: stream.kind || "COMBINED",
+    is_hls: Boolean(stream.isHls),
+    is_dash: Boolean(stream.isDash),
+    container: String(stream.container || ""),
+    host,
+    path_prefix: pathPrefix,
+    height: Number(stream.height || 0),
+    language: String(stream.language || ""),
+    label: String(stream.label || "").slice(0, 120),
+  };
+}
+
+function scoreStreamCandidate(stream, hint) {
+  if (!hint || !stream) return 0;
+  let score = 0;
+  let sHost = "";
+  let sPath = "";
+  try {
+    const u = new URL(stream.url);
+    sHost = u.hostname.toLowerCase();
+    sPath = u.pathname || "";
+  } catch {}
+  const hHost = String(hint.host || "").toLowerCase();
+  const hPath = String(hint.path_prefix || "");
+  if (hHost && sHost === hHost) score += 40;
+  const hDir = hPath.includes("/") ? hPath.slice(0, hPath.lastIndexOf("/")) : "";
+  if (hDir.length > 3 && sPath.startsWith(hDir)) score += 30;
+  if (hPath.length > 3 && sPath === hPath) score += 25;
+  if (hint.kind && hint.kind === stream.kind) score += 30;
+  if (Boolean(hint.is_hls) && stream.isHls) score += 25;
+  if (Boolean(hint.is_dash) && stream.isDash) score += 25;
+  if (hint.height && Number(stream.height || 0) === Number(hint.height)) score += 20;
+  const hLang = String(hint.language || "").toLowerCase();
+  const sLang = String(stream.language || "").toLowerCase();
+  if (hLang && sLang && (sLang === hLang || sLang.includes(hLang))) score += 25;
+  if (hint.container && String(stream.container || "").toLowerCase() === String(hint.container).toLowerCase()) score += 10;
+  return score;
+}
+
+ipcMain.handle("room:extract-source-url", async (_e, { sourceUrl, wantPaired, streamHint }) => {
   if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl) || !streamSniffer || !browserView) return null;
 
+  const hintVideo = streamHint && streamHint.video ? streamHint.video : null;
+  const hintAudio = streamHint && streamHint.audio ? streamHint.audio : null;
+  const refererEmbedUrl = streamHint && typeof streamHint.referer_url === "string" ? streamHint.referer_url.trim() : "";
+  const clickTrail = streamHint && Array.isArray(streamHint.click_trail) ? streamHint.click_trail : [];
+
   // Mute background browserView so there is ZERO double audio while extracting the fresh IP-valid token
+  isGuestExtracting = true;
   browserView.webContents.setAudioMuted(true);
   currentBrowserUrl = sourceUrl;
   streamSniffer.clearForNewPage(sourceUrl);
   browserView.webContents.loadURL(sourceUrl).catch(() => {});
 
-  // Trigger silent Play across main frame AND all cross-origin iframes
+  const clicksJson = JSON.stringify(clickTrail);
+  // Trigger recorded Admin clicks + silent Play across main frame AND all cross-origin iframes
   const triggerPlayAllFrames = () => {
     if (!browserView || browserView.webContents.isDestroyed()) return;
-    const js = `(function(){try{var v=document.querySelector('video');if(v){v.muted=true;v.volume=0;if(v.paused)v.play().catch(function(){});}var btn=document.querySelector('.vjs-big-play-button,.plyr__control--overlaid,.jw-icon-display,.jw-display-icon-container,[aria-label*="Play" i],.play-button');if(btn)btn.click();}catch(_){}})();`;
+    const js = `(function(){
+      try {
+        window.__ssGuestReplayLock = true;
+        window.__ssReplayedKeys = window.__ssReplayedKeys || new Set();
+        var clicks = ${clicksJson};
+        var isTopHere = (window === window.top);
+        for (var i = 0; i < clicks.length; i++) {
+          var c = clicks[i];
+          var key = i + '|' + (c.selector || c.href || c.text || '');
+          if (window.__ssReplayedKeys.has(key)) continue;
+          if (Boolean(c.is_top) !== isTopHere) continue;
+          if (!isTopHere && c.frame_url) {
+            try { if (new URL(c.frame_url).hostname !== location.hostname) continue; } catch(_) {}
+          }
+          var target = null;
+          if (c.selector) { try { target = document.querySelector(c.selector); } catch(_) {} }
+          if (!target && c.href) {
+            try {
+              var p = new URL(c.href).pathname;
+              var as = document.querySelectorAll('a[href]');
+              for (var j = 0; j < as.length; j++) {
+                if (as[j].href === c.href || (p && p.length > 3 && (as[j].getAttribute('href') || '').includes(p))) { target = as[j]; break; }
+              }
+            } catch(_) {}
+          }
+          if (!target && c.text && c.text.length >= 2) {
+            var needle = c.text.toLowerCase();
+            var cand = document.querySelectorAll(c.tag || 'a,button,[role="button"],div,span');
+            for (var k = 0; k < cand.length; k++) {
+              var txt = (cand[k].innerText || cand[k].getAttribute('aria-label') || cand[k].getAttribute('title') || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+              if (txt && (txt === needle || (needle.length >= 4 && txt.includes(needle)))) { target = cand[k]; break; }
+            }
+          }
+          if (!target && typeof c.rel_x === 'number' && typeof c.rel_y === 'number' && c.rel_x > 0 && c.rel_y > 0) {
+            target = document.elementFromPoint(Math.round(c.rel_x * (window.innerWidth || 0)), Math.round(c.rel_y * (window.innerHeight || 0)));
+          }
+          if (target) {
+            window.__ssReplayedKeys.add(key);
+            try { target.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch(_) {}
+            try { target.click(); } catch(_) {}
+            try { target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch(_) {}
+            break;
+          }
+        }
+        var v = document.querySelector('video');
+        if (v) { v.muted = true; v.volume = 0; if (v.paused) v.play().catch(function(){}); }
+        var btn = document.querySelector('.vjs-big-play-button,.vjs-play-control,.plyr__control--overlaid,[data-plyr="play"],.jw-icon-display,.jw-display-icon-container,.jw-icon-playback,[aria-label*="Play" i],[title*="Play" i],.play-button,.play-btn,#play-btn,[class*="play-btn" i],[class*="playBtn" i]');
+        if (btn) btn.click(); else if (v && v.paused) v.click();
+      } catch(_) {}
+    })();`;
     try {
       const frames = browserView.webContents.mainFrame ? browserView.webContents.mainFrame.framesInSubtree : [];
       for (const frame of frames) {
@@ -633,41 +749,70 @@ ipcMain.handle("room:extract-source-url", async (_e, { sourceUrl, wantPaired }) 
       browserView.webContents.executeJavaScript(js).catch(() => {});
     }
   };
-  const playPulse1 = setTimeout(triggerPlayAllFrames, 1800);
-  const playPulse2 = setTimeout(triggerPlayAllFrames, 4000);
+  const replayInterval = setInterval(triggerPlayAllFrames, 1100);
+  setTimeout(triggerPlayAllFrames, 900);
 
   return await new Promise((resolve) => {
     const start = Date.now();
     let firstCandidateAt = 0;
+    let triedRefererHop = false;
+
     const timer = setInterval(() => {
       const list = streamSniffer.getSortedStreams().filter((s) => !s.isDrmProtected);
       const combined = list.filter((s) => s.kind === "COMBINED");
       const videoOnly = list.filter((s) => s.kind === "VIDEO_ONLY");
       const audioOnly = list.filter((s) => s.kind === "AUDIO_ONLY");
 
+      const pickBest = (arr, h) => {
+        if (!arr.length) return null;
+        return arr.reduce((best, cur) => (scoreStreamCandidate(cur, h) > scoreStreamCandidate(best, h) ? cur : best), arr[0]);
+      };
+      const bestVideoOnly = pickBest(videoOnly, hintVideo);
+      const bestAudioOnly = pickBest(audioOnly, hintAudio);
+      const bestCombined = pickBest(combined, hintVideo);
+      const bestVideoScore = Math.max(
+        bestVideoOnly ? scoreStreamCandidate(bestVideoOnly, hintVideo) : -1,
+        bestCombined ? scoreStreamCandidate(bestCombined, hintVideo) : -1
+      );
+
       let chosenVideo = null;
       let chosenAudio = null;
 
-      if (wantPaired && videoOnly.length > 0 && audioOnly.length > 0) {
-        chosenVideo = videoOnly[0];
-        chosenAudio = audioOnly[0];
-      } else if (combined.length > 0 || (videoOnly.length > 0 && audioOnly.length > 0)) {
+      if (wantPaired && bestVideoOnly && bestAudioOnly) {
         if (firstCandidateAt === 0) firstCandidateAt = Date.now();
-        // When Admin merged Video+Audio, wait up to 1.8s for separated audio+video before falling back to combined
-        if (!wantPaired || Date.now() - firstCandidateAt >= 1800) {
-          if (videoOnly.length > 0 && audioOnly.length > 0) {
-            chosenVideo = videoOnly[0];
-            chosenAudio = audioOnly[0];
-          } else if (combined.length > 0) {
-            chosenVideo = combined[0];
+        if (bestVideoScore >= 90 || Date.now() - firstCandidateAt >= 1600) {
+          chosenVideo = bestVideoOnly;
+          chosenAudio = bestAudioOnly;
+        }
+      } else if (bestCombined || (bestVideoOnly && bestAudioOnly)) {
+        if (firstCandidateAt === 0) firstCandidateAt = Date.now();
+        const exactMatch = bestVideoScore >= 90 && (!wantPaired || bestAudioOnly);
+        if (exactMatch || Date.now() - firstCandidateAt >= 1800) {
+          if (wantPaired && bestVideoOnly && bestAudioOnly) {
+            chosenVideo = bestVideoOnly;
+            chosenAudio = bestAudioOnly;
+          } else if (!wantPaired && bestCombined && bestVideoOnly) {
+            const cScore = scoreStreamCandidate(bestCombined, hintVideo);
+            const vScore = scoreStreamCandidate(bestVideoOnly, hintVideo);
+            if (vScore > cScore && bestAudioOnly) {
+              chosenVideo = bestVideoOnly;
+              chosenAudio = bestAudioOnly;
+            } else {
+              chosenVideo = bestCombined;
+            }
+          } else if (bestVideoOnly && bestAudioOnly) {
+            chosenVideo = bestVideoOnly;
+            chosenAudio = bestAudioOnly;
+          } else if (bestCombined) {
+            chosenVideo = bestCombined;
           }
         }
       }
 
       if (chosenVideo) {
         clearInterval(timer);
-        clearTimeout(playPulse1);
-        clearTimeout(playPulse2);
+        clearInterval(replayInterval);
+        isGuestExtracting = false;
         // Stop background browser page immediately and unmute for future manual browsing
         browserView.webContents.loadURL("about:blank").catch(() => {});
         browserView.webContents.setAudioMuted(false);
@@ -694,10 +839,18 @@ ipcMain.handle("room:extract-source-url", async (_e, { sourceUrl, wantPaired }) 
         return;
       }
 
-      if (Date.now() - start > 15000) {
+      const elapsed = Date.now() - start;
+      if (!triedRefererHop && elapsed >= 11000 && list.length === 0 &&
+          refererEmbedUrl.startsWith("http") && refererEmbedUrl !== sourceUrl) {
+        triedRefererHop = true;
+        browserView.webContents.loadURL(refererEmbedUrl).catch(() => {});
+      }
+
+      if (elapsed > 25000) {
         clearInterval(timer);
-        clearTimeout(playPulse1);
-        clearTimeout(playPulse2);
+        clearInterval(replayInterval);
+        isGuestExtracting = false;
+        browserView.webContents.loadURL("about:blank").catch(() => {});
         browserView.webContents.setAudioMuted(false);
         resolve(null);
       }
@@ -732,6 +885,21 @@ ipcMain.handle("streams:play-in-room", async (_e, { videoStream, audioStream }) 
     ? `${videoStream.height ? `${videoStream.height}p` : videoStream.container.toUpperCase()} + ${audioStream.language || audioStream.container.toUpperCase()} (Synced)`
     : videoStream.label;
 
+  const now = Date.now();
+  const cleanClicks = recentUserClicks
+    .filter((c) => now - (c._ts || 0) <= 180000)
+    .slice(-8)
+    .map(({ _ts, ...rest }) => rest);
+
+  const streamHint = {
+    mode: audioStream ? "paired" : "single",
+    referer_url: publicHeaders.Referer || publicHeaders.referer || "",
+    entry_url: entryBrowserUrl || currentBrowserUrl,
+    video: buildTrackHint(videoStream),
+    audio: audioStream ? buildTrackHint(audioStream) : null,
+    click_trail: cleanClicks,
+  };
+
   const payload = {
     video_url: videoStream.url,
     audio_url: audioStream ? audioStream.url : "",
@@ -741,6 +909,7 @@ ipcMain.handle("streams:play-in-room", async (_e, { videoStream, audioStream }) 
     label,
     headers: publicHeaders,
     source_url: currentBrowserUrl,
+    stream_hint: streamHint,
   };
 
   activeTab = "room";

@@ -11,6 +11,6 @@ contextBridge.exposeInMainWorld("StreamSyncDesktop", {
   isDesktop: true,
   registerStreamHeaders: (urls, headers) =>
     ipcRenderer.invoke("room:register-headers", { urls, headers }),
-  extractFromSourceUrl: (sourceUrl, wantPaired) =>
-    ipcRenderer.invoke("room:extract-source-url", { sourceUrl, wantPaired }),
+  extractFromSourceUrl: (sourceUrl, wantPaired, streamHint) =>
+    ipcRenderer.invoke("room:extract-source-url", { sourceUrl, wantPaired, streamHint }),
 });

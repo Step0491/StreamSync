@@ -150,6 +150,62 @@ const PAGE_HOOK_SCRIPT = `
     } catch (_) {}
   }
 
+  // 4. Record Admin's real user clicks across main page + every iframe for Guest replay
+  function buildSimpleSelector(el) {
+    if (!el || el.nodeType !== 1) return "";
+    if (el.id) return "#" + CSS.escape(el.id);
+    const parts = [];
+    let cur = el;
+    for (let depth = 0; depth < 4 && cur && cur.nodeType === 1 && cur !== document.body && cur !== document.documentElement; depth++) {
+      let seg = cur.tagName.toLowerCase();
+      if (cur.id) {
+        parts.unshift("#" + CSS.escape(cur.id));
+        break;
+      }
+      const cls = typeof cur.className === "string"
+        ? cur.className.trim().split(/\\s+/).filter((c) => c && c.length < 32 && !/^(active|hover|focus|selected)$/i.test(c)).slice(0, 2)
+        : [];
+      if (cls.length) {
+        seg += "." + cls.map((c) => CSS.escape(c)).join(".");
+      } else if (cur.parentElement) {
+        const sibs = Array.from(cur.parentElement.children).filter((s) => s.tagName === cur.tagName);
+        if (sibs.length > 1) seg += ":nth-of-type(" + (sibs.indexOf(cur) + 1) + ")";
+      }
+      parts.unshift(seg);
+      cur = cur.parentElement;
+    }
+    return parts.join(" > ");
+  }
+
+  document.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (window.__ssGuestReplayLock || !e.isTrusted) return;
+      const raw = e.target;
+      if (!raw || raw.nodeType !== 1) return;
+      const interactive = raw.closest("a, button, [role='button'], [onclick], video, [class*='play' i], [class*='server' i], [class*='watch' i], [class*='player' i]") || raw;
+      const anchor = raw.closest("a");
+      const href = anchor && anchor.href && /^https?:\\/\\//i.test(anchor.href) ? anchor.href : "";
+      const iw = Math.max(1, window.innerWidth || 1);
+      const ih = Math.max(1, window.innerHeight || 1);
+      emit({
+        type: "user_click",
+        click: {
+          tag: (interactive.tagName || "").toLowerCase(),
+          id: (interactive.id || "").slice(0, 80),
+          selector: buildSimpleSelector(interactive).slice(0, 220),
+          href: href.slice(0, 512),
+          text: (interactive.innerText || interactive.getAttribute("aria-label") || interactive.getAttribute("title") || "").replace(/\\s+/g, " ").trim().slice(0, 80),
+          frame_url: location.href.slice(0, 512),
+          is_top: window === window.top,
+          rel_x: Number((e.clientX / iw).toFixed(4)),
+          rel_y: Number((e.clientY / ih).toFixed(4))
+        }
+      });
+    },
+    true
+  );
+
   setInterval(scanFrame, 2000);
   if (document.readyState !== "loading") scanFrame();
   else document.addEventListener("DOMContentLoaded", scanFrame, { once: true });
