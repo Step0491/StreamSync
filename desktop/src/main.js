@@ -364,6 +364,7 @@ async function createMainWindow() {
         mainWindow.setFullScreen(true);
       }
       layoutViews();
+      setTimeout(layoutViews, 80);
     });
     wc.on("leave-html-full-screen", () => {
       isHtmlFullscreen = false;
@@ -371,6 +372,16 @@ async function createMainWindow() {
         mainWindow.setFullScreen(false);
       }
       layoutViews();
+      setTimeout(layoutViews, 80);
+    });
+    wc.on("did-navigate", () => {
+      if (isHtmlFullscreen) {
+        isHtmlFullscreen = false;
+        if (!wasFullScreenBeforeHtml && mainWindow.isFullScreen()) {
+          mainWindow.setFullScreen(false);
+        }
+        layoutViews();
+      }
     });
   };
   attachFullscreenHandlers(roomView.webContents);
@@ -510,8 +521,23 @@ async function createMainWindow() {
   });
 
   mainWindow.on("resize", layoutViews);
-  mainWindow.on("maximize", layoutViews);
-  mainWindow.on("unmaximize", layoutViews);
+  mainWindow.on("maximize", () => {
+    if (!mainWindow.isFullScreen()) isHtmlFullscreen = false;
+    layoutViews();
+  });
+  mainWindow.on("unmaximize", () => {
+    if (!mainWindow.isFullScreen()) isHtmlFullscreen = false;
+    layoutViews();
+  });
+  mainWindow.on("enter-full-screen", () => {
+    layoutViews();
+    setTimeout(layoutViews, 80);
+  });
+  mainWindow.on("leave-full-screen", () => {
+    isHtmlFullscreen = false;
+    layoutViews();
+    setTimeout(layoutViews, 80);
+  });
 
   layoutViews();
   roomView.webContents.loadURL(currentRoomUrl);
@@ -522,6 +548,12 @@ async function createMainWindow() {
 // ---------- IPC Handlers ----------
 
 ipcMain.handle("shell:switch-tab", (_e, tab) => {
+  if (isHtmlFullscreen) {
+    isHtmlFullscreen = false;
+    if (mainWindow && !wasFullScreenBeforeHtml && mainWindow.isFullScreen()) {
+      mainWindow.setFullScreen(false);
+    }
+  }
   activeTab = tab === "browser" ? "browser" : "room";
   layoutViews();
   sendShellState();
