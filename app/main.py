@@ -24,6 +24,16 @@ STATIC_DIR = BASE_DIR / "static"
 app = FastAPI(title="StreamSync", version="0.3.0")
 room_manager = RoomManager()
 
+
+@app.middleware("http")
+async def disable_ui_cache(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path in ("/", "/static/index.html", "/static/app.js", "/static/styles.css"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 _HLS_URI_ATTR_RE = re.compile(r'(URI=")([^"]+)(")', re.IGNORECASE)
 _MAX_MANIFEST_PROXY_BYTES = 4 * 1024 * 1024
 

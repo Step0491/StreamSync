@@ -32,6 +32,12 @@ jobs:
         working-directory: desktop
         run: npm test
 
+      - name: Stamp Deterministic Build Number
+        working-directory: desktop
+        shell: bash
+        run: |
+          echo "{\"build\": ${{ github.run_number }}, \"version\": \"0.2.${{ github.run_number }}\"}" > src/buildInfo.json
+
       - name: Build Portable Windows EXE
         working-directory: desktop
         run: npm run build:win

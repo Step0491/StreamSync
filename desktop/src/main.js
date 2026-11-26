@@ -2,7 +2,8 @@
 
 const fs = require("fs");
 const path = require("path");
-const { app, BrowserWindow, WebContentsView, ipcMain, session, clipboard } = require("electron");
+const { spawn } = require("child_process");
+const { app, BrowserWindow, WebContentsView, ipcMain, session, clipboard, dialog, net, shell } = require("electron");
 const { DesktopAdBlockManager, registrableDomain, extractHost } = require("./adblockManager");
 const { DesktopStreamSniffer } = require("./streamSniffer");
 
@@ -47,6 +48,8 @@ let streamSniffer = null;
 
 let activeTab = "room"; // "room" | "browser"
 let drawerOpen = false;
+let isHtmlFullscreen = false;
+let wasFullScreenBeforeHtml = false;
 let currentBrowserUrl = DEFAULT_BROWSER_URL;
 let currentRoomUrl = DEFAULT_SERVER_URL;
 let lastBrowserNavSig = "";
@@ -149,11 +152,24 @@ function configureRoomHeaderAndCorsProxy(roomSession) {
 function layoutViews() {
   if (!mainWindow || !roomView || !browserView) return;
   const [winW, winH] = mainWindow.getContentSize();
+  const hiddenBounds = { x: 0, y: TOPBAR_HEIGHT, width: 0, height: 0 };
+
+  if (isHtmlFullscreen) {
+    const fullBounds = { x: 0, y: 0, width: winW, height: winH };
+    if (activeTab === "room") {
+      roomView.setBounds(fullBounds);
+      browserView.setBounds(hiddenBounds);
+    } else {
+      browserView.setBounds(fullBounds);
+      roomView.setBounds(hiddenBounds);
+    }
+    return;
+  }
+
   const contentH = Math.max(0, winH - TOPBAR_HEIGHT);
   const contentW = drawerOpen ? Math.max(320, winW - DRAWER_WIDTH) : winW;
 
   const activeBounds = { x: 0, y: TOPBAR_HEIGHT, width: contentW, height: contentH };
-  const hiddenBounds = { x: 0, y: TOPBAR_HEIGHT, width: 0, height: 0 };
 
   if (activeTab === "room") {
     roomView.setBounds(activeBounds);
@@ -330,6 +346,26 @@ async function createMainWindow() {
 
   mainWindow.contentView.addChildView(roomView);
   mainWindow.contentView.addChildView(browserView);
+
+  const attachFullscreenHandlers = (wc) => {
+    wc.on("enter-html-full-screen", () => {
+      isHtmlFullscreen = true;
+      wasFullScreenBeforeHtml = mainWindow.isFullScreen();
+      if (!wasFullScreenBeforeHtml) {
+        mainWindow.setFullScreen(true);
+      }
+      layoutViews();
+    });
+    wc.on("leave-html-full-screen", () => {
+      isHtmlFullscreen = false;
+      if (!wasFullScreenBeforeHtml && mainWindow.isFullScreen()) {
+        mainWindow.setFullScreen(false);
+      }
+      layoutViews();
+    });
+  };
+  attachFullscreenHandlers(roomView.webContents);
+  attachFullscreenHandlers(browserView.webContents);
 
   // Popup & Ad Redirect Shield on browserView
   browserView.webContents.setWindowOpenHandler(({ url }) => {
@@ -730,6 +766,149 @@ ipcMain.handle("streams:play-in-room", async (_e, { videoStream, audioStream }) 
     u.searchParams.set("title", payload.title);
     if (payload.audio_url) u.searchParams.set("audio", payload.audio_url);
     roomView.webContents.loadURL(u.href);
+  }
+});
+
+function readBuildInfo() {
+  try {
+    const raw = fs.readFileSync(path.join(__dirname, "buildInfo.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    return {
+      build: Number(parsed.build) || 1,
+      version: String(parsed.version || "0.2.1"),
+    };
+  } catch {
+    return { build: 1, version: "0.2.1" };
+  }
+}
+
+function sendUpdateProgress(payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("update:progress", payload);
+  }
+}
+
+ipcMain.handle("app:check-update", async () => {
+  const local = readBuildInfo();
+  try {
+    const resp = await net.fetch("https://api.github.com/repos/Step0491/StreamSync/releases?per_page=15", {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": `StreamSync-Desktop/${local.version}`,
+      },
+    });
+    if (!resp.ok) {
+      throw new Error(`GitHub API HTTP ${resp.status}`);
+    }
+    const releases = await resp.json();
+    let bestBuild = -1;
+    let exeUrl = null;
+    for (const rel of releases) {
+      const tag = String(rel.tag_name || "");
+      if (!/^windows-build-/i.test(tag)) continue;
+      const m = tag.match(/(\d+)$/);
+      if (!m) continue;
+      const num = Number(m[1]);
+      const assets = Array.isArray(rel.assets) ? rel.assets : [];
+      const exeAsset = assets.find((a) => String(a.name || "").toLowerCase().endsWith(".exe"));
+      if (exeAsset && num > bestBuild) {
+        bestBuild = num;
+        exeUrl = exeAsset.browser_download_url;
+      }
+    }
+
+    if (bestBuild < 0) {
+      throw new Error("No windows-build release with EXE found.");
+    }
+
+    if (bestBuild <= local.build) {
+      await dialog.showMessageBox(mainWindow, {
+        type: "info",
+        title: "App Up to Date",
+        message: "StreamSync Desktop is up to date.",
+        detail: `Installed: v${local.version} (build ${local.build})\nLatest release: build ${bestBuild}`,
+      });
+      return;
+    }
+
+    const choice = await dialog.showMessageBox(mainWindow, {
+      type: "question",
+      buttons: ["Download & Update", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "Update Available",
+      message: `New Windows build ${bestBuild} available!`,
+      detail: `Installed: v${local.version} (build ${local.build})\nNew version: v0.2.${bestBuild} (build ${bestBuild})`,
+    });
+    if (choice.response !== 0 || !exeUrl) return;
+
+    sendUpdateProgress({ pct: 0 });
+    const dlResp = await net.fetch(exeUrl);
+    if (!dlResp.ok || !dlResp.body) {
+      throw new Error(`Download HTTP ${dlResp.status}`);
+    }
+
+    const totalBytes = Number(dlResp.headers.get("content-length") || 0);
+    const portableExe = process.env.PORTABLE_EXECUTABLE_FILE || "";
+    const targetPath = portableExe
+      ? `${portableExe}.new.exe`
+      : path.join(app.getPath("downloads"), `StreamSync-Windows-x64-build-${bestBuild}.exe`);
+
+    const writer = fs.createWriteStream(targetPath);
+    const reader = dlResp.body.getReader();
+    let downloaded = 0;
+    let lastPct = -1;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      writer.write(Buffer.from(value));
+      downloaded += value.byteLength;
+      if (totalBytes > 0) {
+        const pct = Math.min(100, Math.max(0, Math.floor((downloaded * 100) / totalBytes)));
+        if (pct !== lastPct) {
+          lastPct = pct;
+          sendUpdateProgress({ pct });
+        }
+      }
+    }
+    await new Promise((resolve, reject) => {
+      writer.on("finish", resolve);
+      writer.on("error", reject);
+      writer.end();
+    });
+    sendUpdateProgress({ done: true });
+
+    if (portableExe && process.platform === "win32") {
+      const batPath = path.join(app.getPath("temp"), "streamsync-update.cmd");
+      const script = [
+        "@echo off",
+        "timeout /t 2 /nobreak >nul",
+        `move /Y "${targetPath}" "${portableExe}" >nul`,
+        `start "" "${portableExe}"`,
+        `del "%~f0"`,
+      ].join("\r\n");
+      fs.writeFileSync(batPath, script, "utf8");
+      spawn("cmd.exe", ["/c", batPath], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+      app.quit();
+    } else {
+      await dialog.showMessageBox(mainWindow, {
+        type: "info",
+        title: "Update Downloaded",
+        message: `Downloaded build ${bestBuild}.`,
+        detail: `Saved to:\n${targetPath}\n\nLaunching the new version now.`,
+      });
+      await shell.openPath(targetPath);
+      app.quit();
+    }
+  } catch (err) {
+    sendUpdateProgress({ done: true });
+    await dialog.showMessageBox(mainWindow, {
+      type: "error",
+      title: "Update Failed",
+      message: "Could not check or download update.",
+      detail: `${err && err.message ? err.message : err}\n\nInstalled: v${local.version} (build ${local.build})`,
+    });
   }
 });
 

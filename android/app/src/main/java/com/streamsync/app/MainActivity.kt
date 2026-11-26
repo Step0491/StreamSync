@@ -74,6 +74,8 @@ class MainActivity : AppCompatActivity() {
 
     @Volatile
     private var latestStreams: List<DetectedStream> = emptyList()
+    @Volatile
+    private var hasUnviewedStreams = false
     private var showingRoom = true
     private var currentBrowserUrl = "https://www.google.com"
     private var lastBrowserDomain = ""
@@ -123,7 +125,13 @@ class MainActivity : AppCompatActivity() {
         streamSniffer = StreamSniffer(
             defaultUserAgent = defaultUa,
             onStreamsUpdated = { sorted ->
+                val prevSize = latestStreams.size
                 latestStreams = sorted
+                if (sorted.isNotEmpty() && sorted.size > prevSize) {
+                    hasUnviewedStreams = true
+                } else if (sorted.isEmpty()) {
+                    hasUnviewedStreams = false
+                }
                 runOnUiThread { updateStreamsButton() }
             },
             onPopupBlockedByJs = {
@@ -247,7 +255,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateStreamsButton() {
         tvStreamLabel.text = "Stream"
-        btnStreams.isSelected = latestStreams.isNotEmpty()
+        btnStreams.isSelected = hasUnviewedStreams
     }
 
     private fun updateShieldButton() {
@@ -336,6 +344,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openStreamSelector() {
+        hasUnviewedStreams = false
+        updateStreamsButton()
         StreamSelectorSheet.show(
             context = this,
             streams = latestStreams,
@@ -343,6 +353,8 @@ class MainActivity : AppCompatActivity() {
                 sendStreamSelectionToRoom(videoStream, audioStream)
             },
             onClearStreams = {
+                hasUnviewedStreams = false
+                updateStreamsButton()
                 streamSniffer.clearForNewTopLevelPage(currentBrowserUrl)
             },
             onExtractCurrentPage = {
@@ -376,6 +388,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun sendStreamSelectionToRoom(videoStream: DetectedStream, audioStream: DetectedStream?) {
+        hasUnviewedStreams = false
+        updateStreamsButton()
         val pageTitle = (geckoBrowser.currentTitle.ifBlank { videoStream.pageTitle ?: "Detected Stream" }).take(140)
         val mergedHeaders = LinkedHashMap<String, String>(videoStream.requestHeaders)
         if (audioStream != null) {

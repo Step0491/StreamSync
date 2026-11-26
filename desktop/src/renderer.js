@@ -9,6 +9,7 @@ const btnShield = document.getElementById("btn-shield");
 const urlForm = document.getElementById("url-form");
 const urlInput = document.getElementById("url-input");
 const btnStreams = document.getElementById("btn-streams");
+const btnUpdate = document.getElementById("btn-update");
 
 const drawer = document.getElementById("streams-drawer");
 const drawerTitle = document.getElementById("drawer-title");
@@ -30,6 +31,30 @@ btnForward.addEventListener("click", () => window.StreamSyncShell.navAction("for
 btnReload.addEventListener("click", () => window.StreamSyncShell.navAction("reload"));
 btnShield.addEventListener("click", () => window.StreamSyncShell.toggleShield());
 btnStreams.addEventListener("click", () => window.StreamSyncShell.toggleDrawer());
+btnUpdate.addEventListener("click", async () => {
+  btnUpdate.disabled = true;
+  btnUpdate.textContent = "Checking...";
+  try {
+    await window.StreamSyncShell.checkUpdate();
+  } finally {
+    btnUpdate.disabled = false;
+    btnUpdate.textContent = "Update";
+  }
+});
+
+window.StreamSyncShell.onUpdateProgress((info) => {
+  if (!info) return;
+  if (info.done) {
+    btnUpdate.disabled = false;
+    btnUpdate.textContent = "Update";
+  } else if (typeof info.pct === "number" && info.pct >= 0) {
+    btnUpdate.disabled = true;
+    btnUpdate.textContent = `Update ${info.pct}%`;
+  } else {
+    btnUpdate.disabled = true;
+    btnUpdate.textContent = info.text || "Updating...";
+  }
+});
 btnCloseDrawer.addEventListener("click", () => window.StreamSyncShell.toggleDrawer(false));
 btnExtractPage.addEventListener("click", () => window.StreamSyncShell.extractCurrentPage());
 btnClearStreams.addEventListener("click", () => window.StreamSyncShell.clearStreams());

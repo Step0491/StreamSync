@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld("StreamSyncShell", {
   copyText: (text) => ipcRenderer.invoke("streams:copy", text),
   playInRoom: (videoStream, audioStream) =>
     ipcRenderer.invoke("streams:play-in-room", { videoStream, audioStream }),
+  checkUpdate: () => ipcRenderer.invoke("app:check-update"),
+  onUpdateProgress: (cb) => ipcRenderer.on("update:progress", (_e, info) => cb(info)),
   onShellState: (cb) => ipcRenderer.on("shell:state", (_e, state) => cb(state)),
   onStreamsUpdated: (cb) => ipcRenderer.on("streams:updated", (_e, streams) => cb(streams)),
 });
