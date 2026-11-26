@@ -570,33 +570,10 @@ async function loadUnifiedPlayback(playback, title = null, broadcast = false, op
       return;
     }
     if (hasNativeAndroidPlayer) return;
-    if (currentProxyFallbackTried) {
-      roomSyncLog.textContent = `Stream blocked by CDN (${errReason || "403 / IP-locked token"}). Join using StreamSync Desktop (.exe) or Android App.`;
-      roomSyncLog.classList.remove("hidden");
-      updateStatusStripVisibility();
-      return;
-    }
     currentProxyFallbackTried = true;
-    roomSyncLog.textContent = `Direct stream blocked (${errReason || "CORS"}) — switching to StreamSync Proxy...`;
+    roomSyncLog.textContent = `Stream blocked by CDN (${errReason || "403 / CORS"}). Direct playback via StreamSync Desktop (.exe) or Android App is required (server proxy disabled to preserve bandwidth).`;
     roomSyncLog.classList.remove("hidden");
     updateStatusStripVisibility();
-    const savedTime = videoEl.currentTime || 0;
-    const wasPlaying = !videoEl.paused || autoPlay;
-    loadUnifiedPlayback(playback, title, false, {
-      autoPlay: wasPlaying,
-      forceProxy: true,
-      initialSync:
-        lastKnownRoomSync ||
-        (savedTime > 0.5
-          ? {
-              is_playing: wasPlaying,
-              position: savedTime,
-              playback_rate: canonicalPlaybackRate || 1.0,
-              server_ts: Date.now() / 1000,
-              logText: "Loaded via StreamSync Proxy",
-            }
-          : null),
-    });
   };
 
   if (isPaired) {
@@ -678,16 +655,13 @@ if (!hasNativeAndroidPlayer) {
   videoEl.addEventListener("error", () => {
     videoBuffering = false;
     reportBufferStateToRoom(false);
-    if (!currentProxyFallbackTried && lastLoadedPlayback && !hasDesktopProxy) {
-      currentProxyFallbackTried = true;
-      loadUnifiedPlayback(lastLoadedPlayback, lastLoadedTitle, false, {
-        autoPlay: true,
-        forceProxy: true,
-        initialSync: lastKnownRoomSync,
-      });
-    } else if (!hasAttemptedGuestExtraction && lastLoadedSourceUrl && myClientId && myClientId !== roomHostId) {
+    if (!hasAttemptedGuestExtraction && lastLoadedSourceUrl && myClientId && myClientId !== roomHostId) {
       hasAttemptedGuestExtraction = true;
-      extractGuestFromServerApi(lastLoadedSourceUrl);
+      if (hasDesktopProxy || hasNativeAndroidPlayer) {
+        tryGuestLocalExtraction("media error");
+      } else {
+        extractGuestFromServerApi(lastLoadedSourceUrl);
+      }
     }
   });
 

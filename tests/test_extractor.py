@@ -116,3 +116,14 @@ def test_proxy_blocks_ssrf_and_rewrites_hls():
     )
     assert "/api/proxy?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Faudio%2Fit.m3u8&referer=https%3A%2F%2Fsite.example%2F" in rewritten
     assert "/api/proxy?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fseg_001.ts&referer=https%3A%2F%2Fsite.example%2F" in rewritten
+
+
+def test_proxy_rejects_heavy_media_segments():
+    with patch("app.security.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]):
+        for media_url in [
+            "https://cdn.example.com/video/movie.mp4",
+            "https://cdn.example.com/hls/seg_001.ts",
+            "https://cdn.example.com/dash/chunk.m4s",
+        ]:
+            res = client.get(f"/api/proxy?url={media_url}")
+            assert res.status_code == 403

@@ -115,6 +115,13 @@ async def proxy_media(
     except UnsafeURLError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    path_lower = current_url.lower().split("?", 1)[0]
+    if path_lower.endswith((".mp4", ".ts", ".m4s", ".webm", ".mkv", ".m4a", ".aac", ".mp3", ".opus", ".mov", ".avi")):
+        raise HTTPException(
+            status_code=403,
+            detail="Heavy media proxying is disabled on this server to preserve bandwidth; direct client playback is required.",
+        )
+
     upstream_headers: dict[str, str] = {
         "User-Agent": (ua or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")[:512],
         "Accept": "*/*",
@@ -157,6 +164,10 @@ async def proxy_media(
             "mpegurl" in ct
             or current_url.lower().split("?", 1)[0].endswith(".m3u8")
         )
+        is_dash = (
+            "dash+xml" in ct
+            or current_url.lower().split("?", 1)[0].endswith(".mpd")
+        )
 
         if request.method == "HEAD":
             resp_headers = dict(cors_headers)
@@ -168,7 +179,15 @@ async def proxy_media(
             await client.aclose()
             return Response(status_code=status_code, headers=resp_headers)
 
-        if is_hls and resp.status_code < 400:
+        if not is_hls and not is_dash:
+            await resp.aclose()
+            await client.aclose()
+            raise HTTPException(
+                status_code=403,
+                detail="Heavy media proxying is disabled on this server to preserve bandwidth; direct client playback is required.",
+            )
+
+        if (is_hls or is_dash) and resp.status_code < 400:
             raw_bytes = bytearray()
             async for chunk in resp.aiter_bytes():
                 raw_bytes.extend(chunk)
@@ -178,36 +197,21 @@ async def proxy_media(
             await resp.aclose()
             await client.aclose()
 
-            text = bytes(raw_bytes).decode("utf-8", errors="replace")
-            if text.lstrip("\ufeff \t\r\n").startswith("#EXTM3U"):
-                rewritten = rewrite_hls_playlist(text, current_url, referer, origin, ua)
-                return Response(
-                    content=rewritten,
-                    status_code=status_code,
-                    media_type="application/vnd.apple.mpegurl",
-                    headers=cors_headers,
-                )
+            if is_hls:
+                text = bytes(raw_bytes).decode("utf-8", errors="replace")
+                if text.lstrip("\ufeff \t\r\n").startswith("#EXTM3U"):
+                    rewritten = rewrite_hls_playlist(text, current_url, referer, origin, ua)
+                    return Response(
+                        content=rewritten,
+                        status_code=status_code,
+                        media_type="application/vnd.apple.mpegurl",
+                        headers=cors_headers,
+                    )
             return Response(content=bytes(raw_bytes), status_code=status_code, media_type=ct, headers=cors_headers)
 
-        stream_headers = dict(cors_headers)
-        for h in ("content-type", "content-length", "content-range", "accept-ranges"):
-            if resp.headers.get(h):
-                stream_headers[h] = resp.headers[h]
-
-        async def _stream_body() -> AsyncIterator[bytes]:
-            try:
-                async for chunk in resp.aiter_bytes(chunk_size=65536):
-                    yield chunk
-            finally:
-                await resp.aclose()
-                await client.aclose()
-
-        return StreamingResponse(
-            _stream_body(),
-            status_code=resp.status_code,
-            headers=stream_headers,
-            media_type=resp.headers.get("content-type"),
-        )
+        await resp.aclose()
+        await client.aclose()
+        raise HTTPException(status_code=resp.status_code if resp.status_code >= 400 else 403, detail="Upstream manifest unavailable.")
     except UnsafeURLError as exc:
         await client.aclose()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
