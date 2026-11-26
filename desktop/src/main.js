@@ -9,7 +9,7 @@ const { DesktopStreamSniffer } = require("./streamSniffer");
 
 const DEFAULT_SERVER_URL = "https://streamsync-pj98.onrender.com/";
 const DEFAULT_BROWSER_URL = "https://www.google.com";
-const TOPBAR_HEIGHT = 56;
+const TOPBAR_HEIGHT = 64;
 const DRAWER_WIDTH = 440;
 
 class JsonConfigStore {
@@ -293,7 +293,7 @@ async function createMainWindow() {
     minHeight: 620,
     backgroundColor: "#0B0F17",
     title: "StreamSync Desktop",
-    icon: path.join(__dirname, "..", "assets", "icon.png"),
+    icon: path.join(__dirname, "..", "assets", process.platform === "win32" ? "icon.ico" : "icon.png"),
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -929,6 +929,10 @@ ipcMain.handle("app:check-update", async () => {
     });
   }
 });
+
+if (process.platform === "win32") {
+  app.setAppUserModelId("com.streamsync.desktop");
+}
 
 app.whenReady().then(createMainWindow);
 

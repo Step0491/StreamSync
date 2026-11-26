@@ -4,13 +4,20 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>StreamSync Desktop</title>
+  <link rel="icon" type="image/png" href="../assets/icon.png" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header class="chrome-bar">
     <div class="tab-group">
-      <button id="btn-tab-room" class="chrome-btn active" type="button">Room</button>
-      <button id="btn-tab-browser" class="chrome-btn" type="button">Browser</button>
+      <button id="btn-tab-room" class="nav-tile active" type="button" title="Room">
+        <img class="tile-icon" src="../assets/icons/ic_tab_room.png" alt="" />
+        <span class="tile-label">Room</span>
+      </button>
+      <button id="btn-tab-browser" class="nav-tile" type="button" title="Browser">
+        <img class="tile-icon" src="../assets/icons/ic_tab_browser.png" alt="" />
+        <span class="tile-label">Browser</span>
+      </button>
     </div>
 
     <div class="nav-group">
@@ -28,8 +35,14 @@
       <button type="submit" class="go-btn">Go</button>
     </form>
 
-    <button id="btn-streams" class="streams-btn" type="button">Streams (0)</button>
-    <button id="btn-update" class="chrome-btn" type="button">Update</button>
+    <button id="btn-streams" class="nav-tile streams-btn" type="button" title="Detected Streams">
+      <img class="tile-icon" src="../assets/icons/ic_tab_stream.png" alt="" />
+      <span id="label-streams" class="tile-label">Streams (0)</span>
+    </button>
+    <button id="btn-update" class="nav-tile" type="button" title="Check for Updates">
+      <img class="tile-icon" src="../assets/icons/ic_tab_update.png" alt="" />
+      <span id="label-update" class="tile-label">Update</span>
+    </button>
   </header>
 
   <div id="update-bar" class="update-bar hidden">

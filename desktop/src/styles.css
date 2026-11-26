@@ -25,7 +25,7 @@ html, body {
 }
 
 .chrome-bar {
-  height: 56px;
+  height: 64px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -38,7 +38,7 @@ html, body {
 .tab-group, .nav-group {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
 
 button {
@@ -59,6 +59,50 @@ button:hover:not(:disabled) {
 button:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+.nav-tile {
+  min-width: 64px;
+  height: 50px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  border: 1px solid #283348;
+  background: #1b2434;
+  color: var(--text);
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  flex-shrink: 0;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.nav-tile:hover:not(:disabled) {
+  background: #283348;
+  border-color: var(--accent);
+}
+
+.nav-tile.active {
+  background: var(--accent);
+  border-color: #818cf8;
+  color: #fff;
+}
+
+.tile-icon {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
+}
+
+.tile-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.1;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 .chrome-btn.active {
