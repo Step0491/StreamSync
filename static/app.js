@@ -815,11 +815,15 @@ function tryGuestLocalExtraction(reason = "", fallbackPlayback = null, streamHin
   updateStatusStripVisibility();
 
   if (hasNativeAndroidPlayer && typeof window.AndroidNativePlayer.extractFromPageUrl === "function") {
-    window.AndroidNativePlayer.extractFromPageUrl(
-      lastLoadedSourceUrl,
-      wantPaired,
-      effectiveHint ? JSON.stringify(effectiveHint) : ""
-    );
+    try {
+      window.AndroidNativePlayer.extractFromPageUrl(
+        lastLoadedSourceUrl,
+        wantPaired,
+        effectiveHint ? JSON.stringify(effectiveHint) : ""
+      );
+    } catch (_) {
+      window.AndroidNativePlayer.extractFromPageUrl(lastLoadedSourceUrl, wantPaired);
+    }
     return true;
   }
   if (hasDesktopProxy && typeof window.StreamSyncDesktop.extractFromSourceUrl === "function") {
@@ -867,6 +871,12 @@ let lastGuestExtractFailureReason = "";
 
 window.onGuestNativeExtractFailed = (reason = "") => {
   lastGuestExtractFailureReason = reason || "timeout";
+  if (reason === "cancelled") {
+    roomSyncLog.textContent = "Estrazione annullata. Puoi rientrare nella stanza o aprire il Browser per premere Play.";
+    roomSyncLog.classList.remove("hidden");
+    updateStatusStripVisibility();
+    return;
+  }
   if (lastLoadedPlayback && lastLoadedPlayback.video_url) {
     roomSyncLog.textContent = `Local extract ${reason || "timed out"} — loading copied room stream...`;
     roomSyncLog.classList.remove("hidden");

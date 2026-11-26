@@ -55,6 +55,8 @@ let currentBrowserUrl = DEFAULT_BROWSER_URL;
 let entryBrowserUrl = "";
 let recentUserClicks = [];
 let isGuestExtracting = false;
+let guestAssistActive = false;
+let activeGuestCancelFn = null;
 let currentRoomUrl = DEFAULT_SERVER_URL;
 let lastBrowserNavSig = "";
 
@@ -170,7 +172,7 @@ function layoutViews() {
     return;
   }
 
-  const topOffset = TOPBAR_HEIGHT + (updateBarVisible ? 36 : 0);
+  const topOffset = TOPBAR_HEIGHT + (updateBarVisible ? 36 : 0) + (guestAssistActive ? 38 : 0);
   const contentH = Math.max(0, winH - topOffset);
   const contentW = drawerOpen ? Math.max(320, winW - DRAWER_WIDTH) : winW;
 
@@ -190,6 +192,7 @@ function sendShellState() {
   mainWindow.webContents.send("shell:state", {
     activeTab,
     drawerOpen,
+    guestAssistActive,
     url: activeTab === "room" ? currentRoomUrl : currentBrowserUrl,
     canGoBack: activeTab === "room" ? roomView.webContents.canGoBack() : browserView.webContents.canGoBack(),
     canGoForward: activeTab === "room" ? roomView.webContents.canGoForward() : browserView.webContents.canGoForward(),
@@ -671,23 +674,33 @@ function scoreStreamCandidate(stream, hint) {
   return score;
 }
 
+ipcMain.handle("room:cancel-guest-assist", () => {
+  if (typeof activeGuestCancelFn === "function") {
+    activeGuestCancelFn();
+  }
+});
+
 ipcMain.handle("room:extract-source-url", async (_e, { sourceUrl, wantPaired, streamHint }) => {
   if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl) || !streamSniffer || !browserView) return null;
 
+  if (typeof activeGuestCancelFn === "function") {
+    activeGuestCancelFn();
+  }
+
   const hintVideo = streamHint && streamHint.video ? streamHint.video : null;
   const hintAudio = streamHint && streamHint.audio ? streamHint.audio : null;
-  const refererEmbedUrl = streamHint && typeof streamHint.referer_url === "string" ? streamHint.referer_url.trim() : "";
   const clickTrail = streamHint && Array.isArray(streamHint.click_trail) ? streamHint.click_trail : [];
 
-  // Mute background browserView so there is ZERO double audio while extracting the fresh IP-valid token
+  // Mute browserView so there is ZERO double audio while extracting the fresh IP-valid token
   isGuestExtracting = true;
+  guestAssistActive = false;
   browserView.webContents.setAudioMuted(true);
   currentBrowserUrl = sourceUrl;
   streamSniffer.clearForNewPage(sourceUrl);
   browserView.webContents.loadURL(sourceUrl).catch(() => {});
 
   const clicksJson = JSON.stringify(clickTrail);
-  // Trigger recorded Admin clicks + silent Play across main frame AND all cross-origin iframes
+  // Trigger recorded Admin clicks + silent Play across main frame AND all cross-origin iframes (Phase A: 0..8s)
   const triggerPlayAllFrames = () => {
     if (!browserView || browserView.webContents.isDestroyed()) return;
     const js = `(function(){
@@ -749,15 +762,44 @@ ipcMain.handle("room:extract-source-url", async (_e, { sourceUrl, wantPaired, st
       browserView.webContents.executeJavaScript(js).catch(() => {});
     }
   };
-  const replayInterval = setInterval(triggerPlayAllFrames, 1100);
+  let replayInterval = setInterval(triggerPlayAllFrames, 1100);
   setTimeout(triggerPlayAllFrames, 900);
 
   return await new Promise((resolve) => {
     const start = Date.now();
     let firstCandidateAt = 0;
-    let triedRefererHop = false;
+    let switchedToAssistedTap = false;
+    let settled = false;
+
+    const cleanupAndReturnToRoom = () => {
+      if (timer) clearInterval(timer);
+      if (replayInterval) {
+        clearInterval(replayInterval);
+        replayInterval = null;
+      }
+      isGuestExtracting = false;
+      guestAssistActive = false;
+      activeGuestCancelFn = null;
+      // Stop browser video immediately so there is ZERO double audio!
+      if (browserView && !browserView.webContents.isDestroyed()) {
+        browserView.webContents.loadURL("about:blank").catch(() => {});
+        browserView.webContents.setAudioMuted(false);
+      }
+      activeTab = "room";
+      drawerOpen = false;
+      layoutViews();
+      sendShellState();
+    };
+
+    activeGuestCancelFn = () => {
+      if (settled) return;
+      settled = true;
+      cleanupAndReturnToRoom();
+      resolve(null);
+    };
 
     const timer = setInterval(() => {
+      if (settled) return;
       const list = streamSniffer.getSortedStreams().filter((s) => !s.isDrmProtected);
       const combined = list.filter((s) => s.kind === "COMBINED");
       const videoOnly = list.filter((s) => s.kind === "VIDEO_ONLY");
@@ -780,14 +822,14 @@ ipcMain.handle("room:extract-source-url", async (_e, { sourceUrl, wantPaired, st
 
       if (wantPaired && bestVideoOnly && bestAudioOnly) {
         if (firstCandidateAt === 0) firstCandidateAt = Date.now();
-        if (bestVideoScore >= 90 || Date.now() - firstCandidateAt >= 1600) {
+        if (bestVideoScore >= 90 || Date.now() - firstCandidateAt >= 1400) {
           chosenVideo = bestVideoOnly;
           chosenAudio = bestAudioOnly;
         }
       } else if (bestCombined || (bestVideoOnly && bestAudioOnly)) {
         if (firstCandidateAt === 0) firstCandidateAt = Date.now();
         const exactMatch = bestVideoScore >= 90 && (!wantPaired || bestAudioOnly);
-        if (exactMatch || Date.now() - firstCandidateAt >= 1800) {
+        if (exactMatch || Date.now() - firstCandidateAt >= 1500) {
           if (wantPaired && bestVideoOnly && bestAudioOnly) {
             chosenVideo = bestVideoOnly;
             chosenAudio = bestAudioOnly;
@@ -810,12 +852,8 @@ ipcMain.handle("room:extract-source-url", async (_e, { sourceUrl, wantPaired, st
       }
 
       if (chosenVideo) {
-        clearInterval(timer);
-        clearInterval(replayInterval);
-        isGuestExtracting = false;
-        // Stop background browser page immediately and unmute for future manual browsing
-        browserView.webContents.loadURL("about:blank").catch(() => {});
-        browserView.webContents.setAudioMuted(false);
+        settled = true;
+        cleanupAndReturnToRoom();
 
         const mergedHeaders = { ...(chosenVideo.requestHeaders || {}) };
         if (chosenAudio && chosenAudio.requestHeaders) {
@@ -840,21 +878,26 @@ ipcMain.handle("room:extract-source-url", async (_e, { sourceUrl, wantPaired, st
       }
 
       const elapsed = Date.now() - start;
-      if (!triedRefererHop && elapsed >= 11000 && list.length === 0 &&
-          refererEmbedUrl.startsWith("http") && refererEmbedUrl !== sourceUrl) {
-        triedRefererHop = true;
-        browserView.webContents.loadURL(refererEmbedUrl).catch(() => {});
+      // Phase B (after 8s): Switch Guest to visible Browser tab already on sourceUrl for 1 real trusted click!
+      if (!switchedToAssistedTap && elapsed >= 8000 && list.length === 0) {
+        switchedToAssistedTap = true;
+        if (replayInterval) {
+          clearInterval(replayInterval);
+          replayInterval = null;
+        }
+        guestAssistActive = true;
+        activeTab = "browser";
+        drawerOpen = false;
+        layoutViews();
+        sendShellState();
       }
 
-      if (elapsed > 25000) {
-        clearInterval(timer);
-        clearInterval(replayInterval);
-        isGuestExtracting = false;
-        browserView.webContents.loadURL("about:blank").catch(() => {});
-        browserView.webContents.setAudioMuted(false);
+      if (elapsed > 90000) {
+        settled = true;
+        cleanupAndReturnToRoom();
         resolve(null);
       }
-    }, 500);
+    }, 400);
   });
 });
 

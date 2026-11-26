@@ -66,11 +66,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnUpdate: LinearLayout
     private lateinit var tvStreamLabel: TextView
     private lateinit var tvUpdateLabel: TextView
+    private lateinit var guestAssistBanner: LinearLayout
+    private lateinit var btnCancelGuestAssist: Button
 
     private lateinit var adBlockEngine: AdBlockEngine
     private lateinit var streamSniffer: StreamSniffer
     private lateinit var geckoBrowser: GeckoBrowserController
     private lateinit var nativePlayerController: NativeRoomPlayerController
+
+    private val guestExtractHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var activeGuestExtractPoller: Runnable? = null
 
     @Volatile
     private var latestStreams: List<DetectedStream> = emptyList()
@@ -107,7 +112,13 @@ class MainActivity : AppCompatActivity() {
         btnUpdate = findViewById(R.id.btnUpdate)
         tvStreamLabel = findViewById(R.id.tvStreamLabel)
         tvUpdateLabel = findViewById(R.id.tvUpdateLabel)
+        guestAssistBanner = findViewById(R.id.guestAssistBanner)
+        btnCancelGuestAssist = findViewById(R.id.btnCancelGuestAssist)
         val btnGo: Button = findViewById(R.id.btnGo)
+
+        btnCancelGuestAssist.setOnClickListener {
+            cancelActiveGuestExtraction(notifyWeb = true, reason = "cancelled")
+        }
 
         val defaultServer = "https://streamsync-pj98.onrender.com/"
         var savedServer = prefs.getString("server_url", defaultServer) ?: defaultServer
@@ -531,30 +542,52 @@ class MainActivity : AppCompatActivity() {
         return score
     }
 
+    private fun cancelActiveGuestExtraction(notifyWeb: Boolean, reason: String = "cancelled") {
+        activeGuestExtractPoller?.let { guestExtractHandler.removeCallbacks(it) }
+        activeGuestExtractPoller = null
+        geckoBrowser.setGuestReplayConfig(false, JSONArray())
+        geckoBrowser.loadUrl("about:blank")
+        guestAssistBanner.visibility = View.GONE
+        if (!showingRoom) {
+            switchTab(showRoom = true)
+        } else {
+            browserGeckoView.visibility = View.GONE
+        }
+        if (notifyWeb) {
+            val quotedReason = JSONObject.quote(reason)
+            roomWebView.evaluateJavascript(
+                "if (window.onGuestNativeExtractFailed) { window.onGuestNativeExtractFailed($quotedReason); }",
+                null
+            )
+        }
+    }
+
     private fun extractStreamSilentlyForGuest(sourceUrl: String, wantPaired: Boolean, streamHintJson: String = "") {
+        activeGuestExtractPoller?.let { guestExtractHandler.removeCallbacks(it) }
+        activeGuestExtractPoller = null
+
         val hintObj = runCatching {
             if (streamHintJson.isNotBlank()) JSONObject(streamHintJson) else null
         }.getOrNull()
         val hintVideo = hintObj?.optJSONObject("video")
         val hintAudio = hintObj?.optJSONObject("audio")
-        val refererEmbedUrl = hintObj?.optString("referer_url", "")?.trim().orEmpty()
         val clickTrail = hintObj?.optJSONArray("click_trail") ?: JSONArray()
 
         currentBrowserUrl = sourceUrl
         latestStreams = emptyList()
         streamSniffer.clearForNewTopLevelPage(sourceUrl)
         adBlockEngine.resetPageCounter()
-        // Keep browserGeckoView VISIBLE (positioned behind opaque roomPane) so GeckoView compositor & iframes execute at full speed
+        guestAssistBanner.visibility = View.GONE
+        // Phase A (0..8s): Silent background attempt with GeckoView VISIBLE behind opaque roomPane
         if (showingRoom) {
             browserGeckoView.visibility = View.VISIBLE
         }
         geckoBrowser.setGuestReplayConfig(true, clickTrail)
         geckoBrowser.loadUrl(sourceUrl)
 
-        val handler = android.os.Handler(android.os.Looper.getMainLooper())
         val startMs = System.currentTimeMillis()
         var firstCandidateMs = 0L
-        var triedRefererHop = false
+        var switchedToAssistedTap = false
 
         val poller = object : Runnable {
             override fun run() {
@@ -576,14 +609,14 @@ class MainActivity : AppCompatActivity() {
 
                 if (wantPaired && bestVideoOnly != null && bestAudioOnly != null) {
                     if (firstCandidateMs == 0L) firstCandidateMs = System.currentTimeMillis()
-                    if (bestVideoScore >= 90 || System.currentTimeMillis() - firstCandidateMs >= 1600L) {
+                    if (bestVideoScore >= 90 || System.currentTimeMillis() - firstCandidateMs >= 1400L) {
                         chosenVideo = bestVideoOnly
                         chosenAudio = bestAudioOnly
                     }
                 } else if (bestCombined != null || (bestVideoOnly != null && bestAudioOnly != null)) {
                     if (firstCandidateMs == 0L) firstCandidateMs = System.currentTimeMillis()
                     val exactMatch = bestVideoScore >= 90 && (!wantPaired || bestAudioOnly != null)
-                    if (exactMatch || System.currentTimeMillis() - firstCandidateMs >= 1800L) {
+                    if (exactMatch || System.currentTimeMillis() - firstCandidateMs >= 1500L) {
                         if (wantPaired && bestVideoOnly != null && bestAudioOnly != null) {
                             chosenVideo = bestVideoOnly
                             chosenAudio = bestAudioOnly
@@ -606,12 +639,13 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 if (chosenVideo != null) {
-                    // Stop hidden GeckoView page immediately so there is ZERO background audio bleed
+                    activeGuestExtractPoller = null
+                    // Immediately stop the browser video & hide banner -> zero double audio!
                     geckoBrowser.setGuestReplayConfig(false, JSONArray())
                     geckoBrowser.loadUrl("about:blank")
-                    if (showingRoom) {
-                        browserGeckoView.visibility = View.GONE
-                    }
+                    guestAssistBanner.visibility = View.GONE
+                    // Automatically bring Guest back to Room with the fresh IP-valid stream!
+                    switchTab(showRoom = true)
 
                     val mergedHeaders = LinkedHashMap<String, String>(chosenVideo.requestHeaders)
                     if (chosenAudio != null) {
@@ -651,31 +685,27 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 val elapsed = System.currentTimeMillis() - startMs
-                // Secondary hop: if the main page hasn't yielded streams after 11s, try the player embed referer URL directly
-                if (!triedRefererHop && elapsed >= 11_000L && list.isEmpty() &&
-                    refererEmbedUrl.startsWith("http") && refererEmbedUrl != sourceUrl
-                ) {
-                    triedRefererHop = true
-                    geckoBrowser.loadUrl(refererEmbedUrl)
+                // Phase B (after 8s): Switch Guest to Browser tab already on sourceUrl for 1 real trusted tap!
+                if (!switchedToAssistedTap && elapsed >= 8_000L && list.isEmpty()) {
+                    switchedToAssistedTap = true
+                    geckoBrowser.setGuestReplayConfig(false, JSONArray())
+                    guestAssistBanner.visibility = View.VISIBLE
+                    switchTab(showRoom = false)
                 }
 
-                geckoBrowser.setGuestReplayConfig(true, clickTrail)
-                if (elapsed < 28_000L) {
-                    handler.postDelayed(this, 500L)
+                if (!switchedToAssistedTap) {
+                    geckoBrowser.setGuestReplayConfig(true, clickTrail)
+                }
+
+                if (elapsed < 90_000L) {
+                    guestExtractHandler.postDelayed(this, 400L)
                 } else {
-                    geckoBrowser.setGuestReplayConfig(false, JSONArray())
-                    geckoBrowser.loadUrl("about:blank")
-                    if (showingRoom) {
-                        browserGeckoView.visibility = View.GONE
-                    }
-                    roomWebView.evaluateJavascript(
-                        "if (window.onGuestNativeExtractFailed) { window.onGuestNativeExtractFailed('timeout'); }",
-                        null
-                    )
+                    cancelActiveGuestExtraction(notifyWeb = true, reason = "timeout")
                 }
             }
         }
-        handler.postDelayed(poller, 1200L)
+        activeGuestExtractPoller = poller
+        guestExtractHandler.postDelayed(poller, 1000L)
     }
 
     private fun checkForUpdates() {

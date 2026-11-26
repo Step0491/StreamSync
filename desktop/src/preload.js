@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("StreamSyncShell", {
   playInRoom: (videoStream, audioStream) =>
     ipcRenderer.invoke("streams:play-in-room", { videoStream, audioStream }),
   checkUpdate: () => ipcRenderer.invoke("app:check-update"),
+  cancelGuestAssist: () => ipcRenderer.invoke("room:cancel-guest-assist"),
   onUpdateProgress: (cb) => ipcRenderer.on("update:progress", (_e, info) => cb(info)),
   onShellState: (cb) => ipcRenderer.on("shell:state", (_e, state) => cb(state)),
   onStreamsUpdated: (cb) => ipcRenderer.on("streams:updated", (_e, streams) => cb(streams)),

@@ -15,6 +15,8 @@ const labelUpdate = document.getElementById("label-update");
 const updateBar = document.getElementById("update-bar");
 const updateBarText = document.getElementById("update-bar-text");
 const updateFill = document.getElementById("update-fill");
+const guestAssistBar = document.getElementById("guest-assist-bar");
+const btnCancelGuestAssist = document.getElementById("btn-cancel-guest-assist");
 
 const drawer = document.getElementById("streams-drawer");
 const drawerTitle = document.getElementById("drawer-title");
@@ -70,6 +72,9 @@ window.StreamSyncShell.onUpdateProgress((info) => {
 btnCloseDrawer.addEventListener("click", () => window.StreamSyncShell.toggleDrawer(false));
 btnExtractPage.addEventListener("click", () => window.StreamSyncShell.extractCurrentPage());
 btnClearStreams.addEventListener("click", () => window.StreamSyncShell.clearStreams());
+if (btnCancelGuestAssist) {
+  btnCancelGuestAssist.addEventListener("click", () => window.StreamSyncShell.cancelGuestAssist());
+}
 
 urlForm.addEventListener("submit", (e) => {
   e.preventDefault();
@@ -104,6 +109,9 @@ window.StreamSyncShell.onShellState((state) => {
       : "Shield: OFF";
   }
 
+  if (guestAssistBar) {
+    guestAssistBar.classList.toggle("hidden", !state.guestAssistActive);
+  }
   drawer.classList.toggle("hidden", !state.drawerOpen);
   if (state.drawerOpen) {
     renderDrawer();
