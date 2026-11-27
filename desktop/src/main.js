@@ -48,6 +48,7 @@ let streamSniffer = null;
 
 let activeTab = "room"; // "room" | "browser"
 let drawerOpen = false;
+let guideOpen = false;
 let updateBarVisible = false;
 let isHtmlFullscreen = false;
 let wasFullScreenBeforeHtml = false;
@@ -174,7 +175,7 @@ function layoutViews() {
 
   const topOffset = TOPBAR_HEIGHT + (updateBarVisible ? 36 : 0) + (guestAssistActive ? 38 : 0);
   const contentH = Math.max(0, winH - topOffset);
-  const contentW = drawerOpen ? Math.max(320, winW - DRAWER_WIDTH) : winW;
+  const contentW = (drawerOpen || guideOpen) ? Math.max(320, winW - DRAWER_WIDTH) : winW;
 
   const activeBounds = { x: 0, y: topOffset, width: contentW, height: contentH };
 
@@ -192,6 +193,7 @@ function sendShellState() {
   mainWindow.webContents.send("shell:state", {
     activeTab,
     drawerOpen,
+    guideOpen,
     guestAssistActive,
     url: activeTab === "room" ? currentRoomUrl : currentBrowserUrl,
     canGoBack: activeTab === "room" ? roomView.webContents.canGoBack() : browserView.webContents.canGoBack(),
@@ -559,11 +561,39 @@ ipcMain.handle("shell:switch-tab", (_e, tab) => {
   sendShellState();
 });
 
+ipcMain.handle("shell:go-home", () => {
+  if (isHtmlFullscreen) {
+    isHtmlFullscreen = false;
+    if (mainWindow && !wasFullScreenBeforeHtml && mainWindow.isFullScreen()) {
+      mainWindow.setFullScreen(false);
+    }
+  }
+  activeTab = "room";
+  drawerOpen = false;
+  guideOpen = false;
+  currentRoomUrl = DEFAULT_SERVER_URL;
+  if (configStore) configStore.set("serverUrl", DEFAULT_SERVER_URL);
+  if (roomView && !roomView.webContents.isDestroyed()) {
+    roomView.webContents.loadURL(DEFAULT_SERVER_URL);
+  }
+  layoutViews();
+  sendShellState();
+});
+
 ipcMain.handle("shell:toggle-drawer", (_e, open) => {
   drawerOpen = typeof open === "boolean" ? open : !drawerOpen;
+  if (drawerOpen) guideOpen = false;
   layoutViews();
   sendShellState();
   return drawerOpen;
+});
+
+ipcMain.handle("shell:toggle-guide", (_e, open) => {
+  guideOpen = typeof open === "boolean" ? open : !guideOpen;
+  if (guideOpen) drawerOpen = false;
+  layoutViews();
+  sendShellState();
+  return guideOpen;
 });
 
 ipcMain.handle("shell:navigate", (_e, rawUrl) => {

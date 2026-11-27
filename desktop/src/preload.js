@@ -4,7 +4,9 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("StreamSyncShell", {
   switchTab: (tab) => ipcRenderer.invoke("shell:switch-tab", tab),
+  goHome: () => ipcRenderer.invoke("shell:go-home"),
   toggleDrawer: (open) => ipcRenderer.invoke("shell:toggle-drawer", open),
+  toggleGuide: (open) => ipcRenderer.invoke("shell:toggle-guide", open),
   navigate: (url) => ipcRenderer.invoke("shell:navigate", url),
   navAction: (action) => ipcRenderer.invoke("shell:nav-action", action),
   toggleShield: () => ipcRenderer.invoke("shell:toggle-shield"),

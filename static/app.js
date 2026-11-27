@@ -44,7 +44,12 @@ const roomCodeInput = document.getElementById("room-code-input");
 const joinRoomBtn = document.getElementById("join-room-btn");
 const createRoomBtn = document.getElementById("create-room-btn");
 const inviteRoomBtn = document.getElementById("invite-room-btn");
+const toggleSidebarBtn = document.getElementById("toggle-sidebar-btn");
 const leaveRoomBtn = document.getElementById("leave-room-btn");
+const webGuideBtn = document.getElementById("web-guide-btn");
+const webGuidePanel = document.getElementById("web-guide-panel");
+const webGuideClose = document.getElementById("web-guide-close");
+let userCollapsedSidebar = false;
 
 const roomSidebar = document.getElementById("room-sidebar");
 const sidebarRoomCode = document.getElementById("sidebar-room-code");
@@ -1227,7 +1232,16 @@ function startRoomTimers() {
 function setRoomUI(roomId) {
   const inRoom = Boolean(roomId);
   currentRoomId = roomId;
-  roomSidebar.classList.toggle("hidden", !inRoom);
+  if (!inRoom) userCollapsedSidebar = false;
+  roomSidebar.classList.toggle("hidden", !inRoom || userCollapsedSidebar);
+  if (nicknameInput) nicknameInput.classList.toggle("hidden", inRoom);
+  if (roomCodeInput) roomCodeInput.classList.toggle("hidden", inRoom);
+  if (joinRoomBtn) joinRoomBtn.classList.toggle("hidden", inRoom);
+  if (createRoomBtn) createRoomBtn.classList.toggle("hidden", inRoom);
+  if (toggleSidebarBtn) {
+    toggleSidebarBtn.classList.toggle("hidden", !inRoom);
+    toggleSidebarBtn.textContent = userCollapsedSidebar ? "Mostra Chat" : "Nascondi Chat";
+  }
   inviteRoomBtn.classList.toggle("hidden", !inRoom);
   leaveRoomBtn.classList.toggle("hidden", !inRoom);
   rttBadge.classList.toggle("hidden", !inRoom);
@@ -1918,6 +1932,24 @@ if (directPlayBtn) {
     clearStatus();
     const media = buildExtensionPlayback(vUrl, aUrl, aUrl ? "Direct Video + Audio" : "Direct Stream");
     loadUnifiedPlayback(media.playback, media.title, true, { autoPlay: true });
+  });
+}
+
+if (webGuideBtn && webGuidePanel) {
+  webGuideBtn.addEventListener("click", () => {
+    webGuidePanel.classList.toggle("hidden");
+  });
+}
+if (webGuideClose && webGuidePanel) {
+  webGuideClose.addEventListener("click", () => {
+    webGuidePanel.classList.add("hidden");
+  });
+}
+if (toggleSidebarBtn && roomSidebar) {
+  toggleSidebarBtn.addEventListener("click", () => {
+    userCollapsedSidebar = !userCollapsedSidebar;
+    roomSidebar.classList.toggle("hidden", !currentRoomId || userCollapsedSidebar);
+    toggleSidebarBtn.textContent = userCollapsedSidebar ? "Mostra Chat" : "Nascondi Chat";
   });
 }
 

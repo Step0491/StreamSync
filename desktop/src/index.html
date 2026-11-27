@@ -21,12 +21,13 @@
     </div>
 
     <div class="nav-group">
-      <button id="btn-back" class="icon-btn" type="button" title="Back">&#8592;</button>
-      <button id="btn-forward" class="icon-btn" type="button" title="Forward">&#8594;</button>
-      <button id="btn-reload" class="icon-btn" type="button" title="Reload">&#8635;</button>
+      <button id="btn-back" class="icon-btn" type="button" title="Indietro">&#8592;</button>
+      <button id="btn-forward" class="icon-btn" type="button" title="Avanti">&#8594;</button>
+      <button id="btn-reload" class="icon-btn" type="button" title="Ricarica pagina">&#8635;</button>
+      <button id="btn-home" class="icon-btn home-btn" type="button" title="Torna alla Home Room (streamsync-pj98.onrender.com)">&#8962;</button>
     </div>
 
-    <button id="btn-shield" class="shield-btn hidden" type="button" title="Toggle uBlock Ad &amp; Popup Shield for this site">
+    <button id="btn-shield" class="shield-btn hidden" type="button" title="Attiva/disattiva AdBlock per questo sito">
       Shield: ON
     </button>
 
@@ -35,14 +36,15 @@
       <button type="submit" class="go-btn">Go</button>
     </form>
 
-    <button id="btn-streams" class="nav-tile streams-btn" type="button" title="Detected Streams">
+    <button id="btn-streams" class="nav-tile streams-btn" type="button" title="Flussi rilevati">
       <img class="tile-icon" src="../assets/icons/ic_tab_stream.png" alt="" />
       <span id="label-streams" class="tile-label">Streams (0)</span>
     </button>
-    <button id="btn-update" class="nav-tile" type="button" title="Check for Updates">
+    <button id="btn-update" class="nav-tile" type="button" title="Verifica aggiornamenti">
       <img class="tile-icon" src="../assets/icons/ic_tab_update.png" alt="" />
       <span id="label-update" class="tile-label">Update</span>
     </button>
+    <button id="btn-guide" class="guide-pill-btn" type="button" title="Guida rapida all'uso">?</button>
   </header>
 
   <div id="update-bar" class="update-bar hidden">
@@ -81,6 +83,52 @@
     </div>
 
     <div id="drawer-content" class="drawer-content"></div>
+  </aside>
+
+  <aside id="guide-drawer" class="drawer hidden">
+    <div class="drawer-header">
+      <div>
+        <h2>Guida Rapida StreamSync</h2>
+        <span class="drawer-sub">Guarda film e video in sincronia perfetta</span>
+      </div>
+      <div class="drawer-header-actions">
+        <button id="btn-close-guide" class="btn-sm btn-secondary" type="button">Chiudi</button>
+      </div>
+    </div>
+
+    <div class="drawer-content guide-body">
+      <div class="guide-card">
+        <div class="guide-head"><span class="guide-badge">Cos'è</span></div>
+        <p>StreamSync è un browser con AdBlock integrato e stanze di visione sincronizzata: ogni partecipante riproduce lo stream dal proprio IP in perfetta sincronia di Play, Pausa e Seek.</p>
+      </div>
+
+      <div class="guide-card">
+        <div class="guide-head"><span class="guide-step">1</span><strong>Se sei Admin (crei la stanza)</strong></div>
+        <ol class="guide-list">
+          <li>Nella scheda <strong>Room</strong> premi <strong>Create Room</strong> (usa <strong>&#8962; Home</strong> per tornare qui in ogni momento).</li>
+          <li>Passa alla scheda <strong>Browser</strong>, apri il sito desiderato e avvia il video.</li>
+          <li>Apri <strong>Streams</strong> e premi <strong>Play in Room</strong> sullo stream migliore (o abbina Video + Audio).</li>
+        </ol>
+      </div>
+
+      <div class="guide-card">
+        <div class="guide-head"><span class="guide-step">2</span><strong>Se sei Guest (ti unisci con codice)</strong></div>
+        <ol class="guide-list">
+          <li>Inserisci nome e codice stanza e premi <strong>Join</strong>.</li>
+          <li>Attendi qualche secondo: l'app estrae automaticamente il flusso per il tuo IP.</li>
+          <li>Se il sito richiede verifica o click manuale, verrai portato in <strong>Browser</strong>: tocca Play una volta e tornerai in <strong>Room</strong> sincronizzato da solo.</li>
+        </ol>
+      </div>
+
+      <div class="guide-card">
+        <div class="guide-head"><span class="guide-step">3</span><strong>Controlli &amp; Scorciatoie</strong></div>
+        <ul class="guide-list">
+          <li><strong>&#8962; Home:</strong> riporta subito alla pagina principale delle stanze.</li>
+          <li><strong>Shield:</strong> blocca popup e pubblicità durante la navigazione nel Browser.</li>
+          <li><strong>Fullscreen:</strong> nasconde la barra superiore finché non esci con ESC.</li>
+        </ul>
+      </div>
+    </div>
   </aside>
 
   <script src="renderer.js"></script>

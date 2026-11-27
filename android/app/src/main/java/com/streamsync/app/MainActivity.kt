@@ -66,6 +66,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnUpdate: LinearLayout
     private lateinit var tvStreamLabel: TextView
     private lateinit var tvUpdateLabel: TextView
+    private lateinit var btnGuide: Button
+    private lateinit var btnHome: Button
     private lateinit var guestAssistBanner: LinearLayout
     private lateinit var btnCancelGuestAssist: Button
 
@@ -112,6 +114,8 @@ class MainActivity : AppCompatActivity() {
         btnUpdate = findViewById(R.id.btnUpdate)
         tvStreamLabel = findViewById(R.id.tvStreamLabel)
         tvUpdateLabel = findViewById(R.id.tvUpdateLabel)
+        btnGuide = findViewById(R.id.btnGuide)
+        btnHome = findViewById(R.id.btnHome)
         guestAssistBanner = findViewById(R.id.guestAssistBanner)
         btnCancelGuestAssist = findViewById(R.id.btnCancelGuestAssist)
         val btnGo: Button = findViewById(R.id.btnGo)
@@ -201,6 +205,8 @@ class MainActivity : AppCompatActivity() {
         btnTabBrowser.setOnClickListener { switchTab(showRoom = false) }
         btnStreams.setOnClickListener { openStreamSelector() }
         btnUpdate.setOnClickListener { checkForUpdates() }
+        btnGuide.setOnClickListener { showQuickGuideDialog() }
+        btnHome.setOnClickListener { goHomeToRenderServer() }
 
         btnShield.setOnClickListener {
             val enabledNow = adBlockEngine.toggleShieldForUrl(currentBrowserUrl)
@@ -336,6 +342,42 @@ class MainActivity : AppCompatActivity() {
             )
             controller.show(WindowInsetsCompat.Type.systemBars())
         }
+    }
+
+    private fun goHomeToRenderServer() {
+        val homeUrl = "https://streamsync-pj98.onrender.com/"
+        prefs.edit().putString("server_url", homeUrl).apply()
+        switchTab(showRoom = true)
+        etUrl.setText(homeUrl)
+        roomWebView.loadUrl(homeUrl)
+        Toast.makeText(this, "Home Room caricata", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun showQuickGuideDialog() {
+        val guideMsg = """
+            COS'È STREAMSYNC
+            Browser con AdBlock + stanze sincronizzate: ogni partecipante riproduce lo stream dal proprio IP in sincronia (Play/Pausa/Seek).
+
+            1. SE SEI ADMIN (crei la stanza)
+            • Nella scheda Room tocca "Create Room" (usa ⌂ Home per tornare qui).
+            • Apri Browser, vai sul sito desiderato e avvia il video.
+            • Tocca Stream e scegli lo stream migliore (o Video + Audio).
+
+            2. SE SEI GUEST (entri con codice)
+            • Inserisci nome e codice stanza e premi Join.
+            • L'app estrae automaticamente il flusso per il tuo IP.
+            • Se il sito richiede 1 tocco fisico/verifica, verrai portato su Browser: tocca Play una volta e tornerai in Room sincronizzato!
+
+            3. TASTI RAPIDI
+            • ⌂ Home: riporta subito alla Home delle stanze su Render.
+            • Shield: blocca pubblicità e popup nel Browser.
+        """.trimIndent()
+
+        AlertDialog.Builder(this)
+            .setTitle("Guida Rapida StreamSync")
+            .setMessage(guideMsg)
+            .setPositiveButton("Capito", null)
+            .show()
     }
 
     private fun navigateCurrentTab() {

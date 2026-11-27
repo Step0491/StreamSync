@@ -5,6 +5,7 @@ const btnTabBrowser = document.getElementById("btn-tab-browser");
 const btnBack = document.getElementById("btn-back");
 const btnForward = document.getElementById("btn-forward");
 const btnReload = document.getElementById("btn-reload");
+const btnHome = document.getElementById("btn-home");
 const btnShield = document.getElementById("btn-shield");
 const urlForm = document.getElementById("url-form");
 const urlInput = document.getElementById("url-input");
@@ -12,6 +13,9 @@ const btnStreams = document.getElementById("btn-streams");
 const labelStreams = document.getElementById("label-streams");
 const btnUpdate = document.getElementById("btn-update");
 const labelUpdate = document.getElementById("label-update");
+const btnGuide = document.getElementById("btn-guide");
+const guideDrawer = document.getElementById("guide-drawer");
+const btnCloseGuide = document.getElementById("btn-close-guide");
 const updateBar = document.getElementById("update-bar");
 const updateBarText = document.getElementById("update-bar-text");
 const updateFill = document.getElementById("update-fill");
@@ -36,16 +40,19 @@ btnTabBrowser.addEventListener("click", () => window.StreamSyncShell.switchTab("
 btnBack.addEventListener("click", () => window.StreamSyncShell.navAction("back"));
 btnForward.addEventListener("click", () => window.StreamSyncShell.navAction("forward"));
 btnReload.addEventListener("click", () => window.StreamSyncShell.navAction("reload"));
+if (btnHome) btnHome.addEventListener("click", () => window.StreamSyncShell.goHome());
 btnShield.addEventListener("click", () => window.StreamSyncShell.toggleShield());
 btnStreams.addEventListener("click", () => window.StreamSyncShell.toggleDrawer());
+if (btnGuide) btnGuide.addEventListener("click", () => window.StreamSyncShell.toggleGuide());
+if (btnCloseGuide) btnCloseGuide.addEventListener("click", () => window.StreamSyncShell.toggleGuide(false));
 btnUpdate.addEventListener("click", async () => {
   btnUpdate.disabled = true;
-  btnUpdate.textContent = "Checking...";
+  labelUpdate.textContent = "Checking...";
   try {
     await window.StreamSyncShell.checkUpdate();
   } finally {
     btnUpdate.disabled = false;
-    btnUpdate.textContent = "Update";
+    labelUpdate.textContent = "Update";
   }
 });
 
@@ -111,6 +118,12 @@ window.StreamSyncShell.onShellState((state) => {
 
   if (guestAssistBar) {
     guestAssistBar.classList.toggle("hidden", !state.guestAssistActive);
+  }
+  if (guideDrawer) {
+    guideDrawer.classList.toggle("hidden", !state.guideOpen);
+  }
+  if (btnGuide) {
+    btnGuide.classList.toggle("active", Boolean(state.guideOpen));
   }
   drawer.classList.toggle("hidden", !state.drawerOpen);
   if (state.drawerOpen) {

@@ -27,9 +27,25 @@
       <button id="join-room-btn" type="button" class="btn-sm btn-secondary">Join</button>
       <button id="create-room-btn" type="button" class="btn-sm">Create Room</button>
       <button id="invite-room-btn" type="button" class="btn-sm btn-secondary hidden">Copy Invite</button>
+      <button id="toggle-sidebar-btn" type="button" class="btn-sm btn-secondary hidden" title="Mostra/nascondi chat e membri">Chat</button>
       <button id="leave-room-btn" type="button" class="btn-sm btn-danger hidden">Leave</button>
+      <button id="web-guide-btn" type="button" class="btn-guide-mini" title="Guida rapida">?</button>
     </div>
   </header>
+
+  <section id="web-guide-panel" class="guide-panel hidden">
+    <div class="guide-panel-inner">
+      <div class="guide-panel-header">
+        <strong>Guida rapida StreamSync</strong>
+        <button id="web-guide-close" type="button" class="btn-sm btn-secondary">Chiudi</button>
+      </div>
+      <div class="guide-grid">
+        <div class="guide-item"><strong>1. Admin:</strong> premi <em>Create Room</em>, apri il tab <em>Browser</em> dell'app, avvia il video e sceglilo in <em>Streams</em>.</div>
+        <div class="guide-item"><strong>2. Guest:</strong> inserisci nome + codice stanza e premi <em>Join</em>; l'app estrae e sincronizza lo stream dal tuo IP.</div>
+        <div class="guide-item"><strong>3. Sync:</strong> Play, Pausa, Seek (-10s/+10s) e chat laterale sono sincronizzati in tempo reale.</div>
+      </div>
+    </div>
+  </section>
 
   <main class="layout">
     <div class="main-col">
